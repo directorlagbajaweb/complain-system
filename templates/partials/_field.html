@@ -1,0 +1,31 @@
+{% load form_extras %}
+{% comment %}
+  One labelled form field with its errors and help text, in Bootstrap's layout.
+
+  Used as:  {% templatetag openblock %} include 'partials/_field.html' with field=form.email {% templatetag closeblock %}
+
+  It exists so the login and signup templates do not each repeat the same six
+  lines of markup per field — and so that when a field is invalid, the red
+  border and the error text appear without anyone having to remember them.
+
+  (Note the {% templatetag openblock %} comment {% templatetag closeblock %} tag rather than {% templatetag opencomment %} … {% templatetag closecomment %}: the short form is
+  single-line only, and a multi-line one is not a comment at all — its contents
+  get rendered.)
+{% endcomment %}
+<div class="mb-3">
+  <label for="{{ field.id_for_label }}" class="form-label">{{ field.label }}</label>
+
+  {% if field.errors %}
+    {# is-invalid is Bootstrap's red-border class. See form_extras.add_class. #}
+    {{ field|add_class:"is-invalid" }}
+    <div class="invalid-feedback d-block">
+      {% for error in field.errors %}<div>{{ error }}</div>{% endfor %}
+    </div>
+  {% else %}
+    {{ field }}
+  {% endif %}
+
+  {% if field.help_text %}
+    <div class="form-text">{{ field.help_text|safe }}</div>
+  {% endif %}
+</div>

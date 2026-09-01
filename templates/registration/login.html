@@ -1,0 +1,55 @@
+{% extends 'base.html' %}
+
+{% block title %}Sign in — Complaint Management System{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-6 col-lg-5">
+
+    <div class="card shadow-sm">
+      <div class="card-body p-4">
+
+        <h1 class="h4 mb-1">Sign in</h1>
+        <p class="text-body-secondary small mb-4">
+          Students, handlers and administrators all sign in here.
+        </p>
+
+        <form method="post" novalidate>
+          {% csrf_token %}
+
+          {% comment %}
+            Errors that belong to the form as a whole rather than to one box —
+            chiefly "no account matches that email and password".
+          {% endcomment %}
+          {% if form.non_field_errors %}
+            <div class="alert alert-danger py-2">
+              {% for error in form.non_field_errors %}<div>{{ error }}</div>{% endfor %}
+            </div>
+          {% endif %}
+
+          {% include 'partials/_field.html' with field=form.username %}
+          {% include 'partials/_field.html' with field=form.password %}
+
+          {% comment %}
+            Carries the page the user was originally trying to reach, so that
+            after a successful sign-in they land there instead of on their
+            default dashboard. role_required is what put it in the URL.
+          {% endcomment %}
+          {% if request.GET.next %}
+            <input type="hidden" name="next" value="{{ request.GET.next }}">
+          {% endif %}
+
+          <button type="submit" class="btn btn-primary w-100">Sign in</button>
+        </form>
+
+      </div>
+    </div>
+
+    <p class="text-center text-body-secondary small mt-3 mb-0">
+      New student? <a href="{% url 'signup' %}">Create an account</a>.<br>
+      Staff accounts are created by the system administrator.
+    </p>
+
+  </div>
+</div>
+{% endblock content %}

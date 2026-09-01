@@ -1,0 +1,87 @@
+{% load static %}<!DOCTYPE html>
+{% comment %}
+  The site shell. Every page extends this one.
+
+  Bootstrap is loaded from static/vendor/ — real files in the repository, not a
+  CDN — so the system works with no internet connection at all.
+
+  Blocks a child page can fill:
+    title    the browser tab / heading text
+    content  the page body
+    scripts  extra <script> tags, after Bootstrap has loaded
+{% endcomment %}
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Complaint Management System{% endblock %}</title>
+  <link rel="stylesheet" href="{% static 'vendor/bootstrap/bootstrap.min.css' %}">
+  <link rel="stylesheet" href="{% static 'css/site.css' %}">
+</head>
+<body class="bg-body-tertiary">
+
+  <nav class="navbar navbar-expand-md navbar-dark bg-dark">
+    <div class="container">
+      <a class="navbar-brand" href="{% url 'root' %}">Complaint Management System</a>
+
+      {# The navbar only has something in it once somebody is signed in. #}
+      {% if user.is_authenticated %}
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse"
+                data-bs-target="#navbarMain" aria-controls="navbarMain"
+                aria-expanded="false" aria-label="Toggle navigation">
+          <span class="navbar-toggler-icon"></span>
+        </button>
+
+        <div class="collapse navbar-collapse justify-content-end" id="navbarMain">
+          <ul class="navbar-nav align-items-md-center">
+            <li class="nav-item">
+              <span class="navbar-text me-md-3">
+                {{ user.full_name }}
+                <span class="badge text-bg-secondary ms-1">{{ user.get_role_display }}</span>
+              </span>
+            </li>
+            <li class="nav-item">
+              {% comment %}
+                A form, not a link: logging out changes state, so it has to be a
+                POST. See the comment on logout_view for what a GET would let
+                any other site on the internet do.
+              {% endcomment %}
+              <form method="post" action="{% url 'logout' %}" class="d-inline">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-outline-light btn-sm">Log out</button>
+              </form>
+            </li>
+          </ul>
+        </div>
+      {% endif %}
+    </div>
+  </nav>
+
+  <main class="container py-4">
+
+    {% block messages %}
+      {% comment %}
+        Django's flash messages — "Welcome back", "You do not have access to
+        that page". MESSAGE_TAGS in settings.py maps Django's tag names onto
+        Bootstrap's alert colours, so message.tags can go straight into the
+        class attribute.
+      {% endcomment %}
+      {% if messages %}
+        {% for message in messages %}
+          <div class="alert alert-{{ message.tags|default:'info' }} alert-dismissible fade show" role="alert">
+            {{ message }}
+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+          </div>
+        {% endfor %}
+      {% endif %}
+    {% endblock messages %}
+
+    {% block content %}{% endblock content %}
+
+  </main>
+
+  <script src="{% static 'vendor/bootstrap/bootstrap.bundle.min.js' %}"></script>
+  {% block scripts %}{% endblock scripts %}
+
+</body>
+</html>

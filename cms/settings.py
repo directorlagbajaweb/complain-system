@@ -58,7 +58,10 @@ ROOT_URLCONF = 'cms.urls'
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
+        # Project-wide templates (base.html and the pages that extend it) live
+        # in one folder at the top level rather than inside the app, because
+        # they are not specific to complaints — they are the site's shell.
+        'DIRS': [BASE_DIR / 'templates'],
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
@@ -124,6 +127,12 @@ USE_TZ = True
 STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 
+# Where our own static files live during development. Bootstrap and Chart.js
+# are checked into static/vendor/ as real files rather than loaded from a CDN,
+# so the whole system runs on a laptop with the network cable pulled out —
+# which is exactly the condition it will be demonstrated under.
+STATICFILES_DIRS = [BASE_DIR / 'static']
+
 # Media is user-uploaded content — complaint attachments. Kept separate from
 # static files because static files ship with the code and media does not.
 MEDIA_URL = 'media/'
@@ -134,6 +143,35 @@ MEDIA_ROOT = BASE_DIR / 'media'
 # because Django bakes the auth model into the migration graph and swapping it
 # afterwards means throwing the database away.
 AUTH_USER_MODEL = 'complaints.User'
+
+
+# Authentication redirects
+#
+# LOGIN_URL is where anyone who is not signed in gets sent. Django's own
+# @login_required uses it, and so does our role_required decorator.
+#
+# There is deliberately no useful LOGIN_REDIRECT_URL here: where you land after
+# signing in depends on your role, so the login view works it out per user
+# rather than sending everyone to one fixed page. The value below is only a
+# fallback for code paths that ask Django instead of asking us.
+LOGIN_URL = 'login'
+LOGIN_REDIRECT_URL = 'student_home'
+LOGOUT_REDIRECT_URL = 'login'
+
+
+# Django's message framework tags messages 'error', 'warning', etc. Bootstrap
+# names its alert colours slightly differently ('danger', not 'error'), so this
+# map lets base.html write class="alert alert-{{ message.tags }}" and get a
+# real Bootstrap colour every time.
+from django.contrib.messages import constants as message_constants  # noqa: E402
+
+MESSAGE_TAGS = {
+    message_constants.DEBUG: 'secondary',
+    message_constants.INFO: 'info',
+    message_constants.SUCCESS: 'success',
+    message_constants.WARNING: 'warning',
+    message_constants.ERROR: 'danger',
+}
 
 
 # Email

@@ -1,22 +1,23 @@
 """
 URL configuration for cms project.
 
-The `urlpatterns` list routes URLs to views. For more information please see:
-    https://docs.djangoproject.com/en/6.1/topics/http/urls/
-Examples:
-Function views
-    1. Add an import:  from my_app import views
-    2. Add a URL to urlpatterns:  path('', views.home, name='home')
-Class-based views
-    1. Add an import:  from other_app.views import Home
-    2. Add a URL to urlpatterns:  path('', Home.as_view(), name='home')
-Including another URLconf
-    1. Import the include() function: from django.urls import include, path
-    2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
+Everything the students and staff use comes from the `complaints` app, mounted
+at the root. The Django admin sits at /admin/ and is where handler and
+administrator accounts get created.
 """
+
+from django.conf import settings
+from django.conf.urls.static import static
 from django.contrib import admin
-from django.urls import path
+from django.urls import include, path
 
 urlpatterns = [
     path('admin/', admin.site.urls),
+    path('', include('complaints.urls')),
 ]
+
+# Uploaded files (complaint attachments) are served by Django itself while
+# DEBUG is on. In production a real web server does this instead, which is why
+# it is switched off here when DEBUG is False rather than left running.
+if settings.DEBUG:
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

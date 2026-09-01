@@ -1,0 +1,21 @@
+/*
+ * The only hand-written CSS in the project.
+ *
+ * Everything else is stock Bootstrap. Keep this file small: each rule here is
+ * a rule that has to be maintained by hand and re-checked whenever Bootstrap
+ * is upgraded, whereas a Bootstrap utility class is somebody else's problem.
+ */
+
+/* Push the footer of short pages (login, signup) off the top of the screen so
+   the card sits in the middle rather than clinging to the navbar. */
+main {
+    min-height: calc(100vh - 56px);
+}
+
+/* The role badge in the navbar reads "Student" / "Handler" / "Administrator".
+   Lower case with wide letter spacing makes it read as a label rather than as
+   part of the person's name. */
+.navbar .badge {
+    font-weight: 500;
+    letter-spacing: 0.02em;
+}

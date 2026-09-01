@@ -1,0 +1,46 @@
+{% extends 'base.html' %}
+
+{% block title %}Create a student account — Complaint Management System{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-8 col-lg-6">
+
+    <div class="card shadow-sm">
+      <div class="card-body p-4">
+
+        <h1 class="h4 mb-1">Create a student account</h1>
+        <p class="text-body-secondary small mb-4">
+          This form registers students only. Handler and administrator accounts
+          are created by the system administrator.
+        </p>
+
+        <form method="post" novalidate>
+          {% csrf_token %}
+
+          {% if form.non_field_errors %}
+            <div class="alert alert-danger py-2">
+              {% for error in form.non_field_errors %}<div>{{ error }}</div>{% endfor %}
+            </div>
+          {% endif %}
+
+          {% include 'partials/_field.html' with field=form.full_name %}
+          {% include 'partials/_field.html' with field=form.matric_no %}
+          {% include 'partials/_field.html' with field=form.academic_department %}
+          {% include 'partials/_field.html' with field=form.email %}
+          {% include 'partials/_field.html' with field=form.password1 %}
+          {% include 'partials/_field.html' with field=form.password2 %}
+
+          <button type="submit" class="btn btn-primary w-100">Create account</button>
+        </form>
+
+      </div>
+    </div>
+
+    <p class="text-center text-body-secondary small mt-3 mb-0">
+      Already registered? <a href="{% url 'login' %}">Sign in</a>.
+    </p>
+
+  </div>
+</div>
+{% endblock content %}
