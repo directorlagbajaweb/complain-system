@@ -229,3 +229,38 @@ class MessageForm(forms.ModelForm):
         super().__init__(*args, **kwargs)
         self.fields['body'].label = "Add a reply"
         _style(self)
+
+
+class HandlerMessageForm(forms.ModelForm):
+    """
+    The staff reply box: the same message body, plus the internal-note switch.
+
+    This is a separate form from `MessageForm` rather than the same one with
+    the checkbox conditionally added. Two forms means the student's form has no
+    `is_internal` field to post to at all — the capability is absent rather
+    than merely hidden, and the two audiences cannot be confused by a future
+    edit that forgets which case it is in.
+    """
+
+    class Meta:
+        model = Message
+        fields = ['body', 'is_internal']
+        labels = {
+            'body': "Message",
+            'is_internal': "Internal note — staff only, hidden from the student",
+        }
+        help_texts = {'is_internal': None}
+        widgets = {
+            'body': forms.Textarea(
+                attrs={'rows': 3, 'placeholder': "Write a reply or a note…"}
+            ),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # An unticked checkbox sends nothing at all, which Django reads as
+        # False — so a public reply is what you get by default, and staff have
+        # to deliberately tick the box to write something the student cannot
+        # see. The safer of the two options is the one that happens by accident.
+        self.fields['is_internal'].required = False
+        _style(self)

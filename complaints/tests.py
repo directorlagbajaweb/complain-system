@@ -580,3 +580,406 @@ class NotificationTests(StudentComplaintTestCase):
         self.assertRedirects(
             response, f"{reverse('login')}?next={reverse('notification_list')}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: the handler side
+# ---------------------------------------------------------------------------
+
+
+class HandlerTestCase(TestCase):
+    """Two units, a handler in each, an admin, and a complaint per unit."""
+
+    @classmethod
+    def setUpTestData(cls):
+        from .models import Category, Complaint
+
+        cls.dept = AcademicDepartment.objects.create(name="Computer Science")
+        cls.ict = Unit.objects.create(name="ICT")
+        cls.bursary = Unit.objects.create(name="Bursary")
+        cls.ict_category = Category.objects.create(name="Portal access", unit=cls.ict)
+        cls.bursary_category = Category.objects.create(name="Fees payment", unit=cls.bursary)
+
+        cls.student = User.objects.create_user(
+            email='ada@school.edu', password=PASSWORD, full_name="Ada Student",
+            matric_no='CSC/2023/001', academic_department=cls.dept,
+        )
+        cls.ict_handler = User.objects.create_user(
+            email='ict@school.edu', password=PASSWORD, full_name="Ife Handler",
+            role=User.Role.HANDLER, unit=cls.ict,
+        )
+        cls.other_ict_handler = User.objects.create_user(
+            email='ict2@school.edu', password=PASSWORD, full_name="Ola Handler",
+            role=User.Role.HANDLER, unit=cls.ict,
+        )
+        cls.bursary_handler = User.objects.create_user(
+            email='bursary@school.edu', password=PASSWORD, full_name="Bisi Handler",
+            role=User.Role.HANDLER, unit=cls.bursary,
+        )
+        cls.admin = User.objects.create_user(
+            email='admin@school.edu', password=PASSWORD, full_name="Chidi Admin",
+            role=User.Role.ADMIN,
+        )
+
+        cls.ict_complaint = Complaint.objects.create(
+            student=cls.student, category=cls.ict_category,
+            subject="Portal will not accept my password",
+            description="Locked out since Monday.",
+        )
+        cls.bursary_complaint = Complaint.objects.create(
+            student=cls.student, category=cls.bursary_category,
+            subject="Fee payment not reflecting",
+            description="Paid last week, portal still says unpaid.",
+        )
+
+    def queue_url(self, complaint):
+        return f"/queue/{complaint.reference_no}/"
+
+
+class UnitScopingTests(HandlerTestCase):
+    """A handler sees their own unit's complaints and no others."""
+
+    def test_queue_lists_only_my_unit(self):
+        self.client.force_login(self.ict_handler)
+        response = self.client.get(HANDLER_QUEUE)
+        self.assertEqual(list(response.context['complaints']), [self.ict_complaint])
+        self.assertNotContains(response, self.bursary_complaint.reference_no)
+
+    def test_other_unit_queue_is_scoped_too(self):
+        self.client.force_login(self.bursary_handler)
+        response = self.client.get(HANDLER_QUEUE)
+        self.assertEqual(list(response.context['complaints']), [self.bursary_complaint])
+
+    def test_opening_another_units_complaint_is_a_404(self):
+        self.client.force_login(self.ict_handler)
+        response = self.client.get(self.queue_url(self.bursary_complaint))
+        self.assertEqual(response.status_code, 404)
+
+    def test_a_reference_that_does_not_exist_is_also_a_404(self):
+        self.client.force_login(self.ict_handler)
+        self.assertEqual(self.client.get("/queue/CMP-2026-9999/").status_code, 404)
+
+    def test_cannot_act_on_another_units_complaint(self):
+        from .models import Complaint
+
+        self.client.force_login(self.ict_handler)
+        for payload in (
+            {'action': 'assign'},
+            {'action': 'status', 'status': Complaint.Status.RESOLVED},
+            {'action': 'message', 'body': "Injected"},
+        ):
+            with self.subTest(action=payload['action']):
+                response = self.client.post(
+                    self.queue_url(self.bursary_complaint), payload
+                )
+                self.assertEqual(response.status_code, 404)
+
+        self.bursary_complaint.refresh_from_db()
+        self.assertIsNone(self.bursary_complaint.assigned_to)
+        self.assertEqual(self.bursary_complaint.status, Complaint.Status.SUBMITTED)
+        self.assertEqual(self.bursary_complaint.messages.count(), 0)
+
+    def test_handler_with_no_unit_sees_nothing(self):
+        """A broken account fails closed, not open."""
+        stray = User.objects.create_user(
+            email='stray@school.edu', password=PASSWORD, full_name="Stray Handler",
+            role=User.Role.HANDLER,
+        )
+        self.client.force_login(stray)
+        response = self.client.get(HANDLER_QUEUE)
+        self.assertEqual(list(response.context['complaints']), [])
+        self.assertEqual(self.client.get(self.queue_url(self.ict_complaint)).status_code, 404)
+
+    def test_students_still_cannot_reach_the_queue(self):
+        self.client.force_login(self.student)
+        self.assertRedirects(self.client.get(HANDLER_QUEUE), STUDENT_HOME)
+        self.assertRedirects(
+            self.client.get(self.queue_url(self.ict_complaint)), STUDENT_HOME
+        )
+
+
+class AdminScopeTests(HandlerTestCase):
+    """Admins use the same pages but are not filtered by unit."""
+
+    def test_admin_sees_every_unit_in_the_queue(self):
+        self.client.force_login(self.admin)
+        response = self.client.get(HANDLER_QUEUE)
+        listed = set(response.context['complaints'])
+        self.assertEqual(listed, {self.ict_complaint, self.bursary_complaint})
+
+    def test_admin_can_open_any_units_complaint(self):
+        self.client.force_login(self.admin)
+        for complaint in (self.ict_complaint, self.bursary_complaint):
+            with self.subTest(ref=complaint.reference_no):
+                response = self.client.get(self.queue_url(complaint))
+                self.assertEqual(response.status_code, 200)
+
+
+class QueueOrderingAndFilterTests(HandlerTestCase):
+
+    def test_unassigned_first_then_oldest_first(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+        from .models import Complaint
+
+        older_assigned = Complaint.objects.create(
+            student=self.student, category=self.ict_category,
+            subject="Older, already claimed", description="x",
+            assigned_to=self.ict_handler, status=Complaint.Status.ASSIGNED,
+        )
+        newer_unassigned = Complaint.objects.create(
+            student=self.student, category=self.ict_category,
+            subject="Newer, nobody has it", description="x",
+        )
+        # created_at is auto_now_add, so push the dates around by hand.
+        now = timezone.now()
+        Complaint.objects.filter(pk=older_assigned.pk).update(
+            created_at=now - timedelta(days=30)
+        )
+        Complaint.objects.filter(pk=self.ict_complaint.pk).update(
+            created_at=now - timedelta(days=10)
+        )
+        Complaint.objects.filter(pk=newer_unassigned.pk).update(created_at=now)
+
+        self.client.force_login(self.ict_handler)
+        response = self.client.get(HANDLER_QUEUE)
+        order = [c.reference_no for c in response.context['complaints']]
+
+        self.assertEqual(
+            order,
+            [
+                self.ict_complaint.reference_no,   # unassigned, waiting 10 days
+                newer_unassigned.reference_no,     # unassigned, waiting 0 days
+                older_assigned.reference_no,       # assigned, so last
+            ],
+        )
+
+    def test_unassigned_and_mine_filters(self):
+        from .models import Complaint
+
+        mine = Complaint.objects.create(
+            student=self.student, category=self.ict_category,
+            subject="Mine", description="x",
+            assigned_to=self.ict_handler, status=Complaint.Status.ASSIGNED,
+        )
+        theirs = Complaint.objects.create(
+            student=self.student, category=self.ict_category,
+            subject="Someone else's", description="x",
+            assigned_to=self.other_ict_handler, status=Complaint.Status.ASSIGNED,
+        )
+        self.client.force_login(self.ict_handler)
+
+        unassigned = self.client.get(HANDLER_QUEUE, {'filter': 'unassigned'})
+        self.assertEqual(list(unassigned.context['complaints']), [self.ict_complaint])
+
+        assigned_to_me = self.client.get(HANDLER_QUEUE, {'filter': 'mine'})
+        self.assertEqual(list(assigned_to_me.context['complaints']), [mine])
+        self.assertNotIn(theirs, assigned_to_me.context['complaints'])
+
+    def test_status_filter_and_nonsense_fallback(self):
+        from .models import Complaint
+
+        self.client.force_login(self.ict_handler)
+
+        submitted = self.client.get(HANDLER_QUEUE, {'filter': Complaint.Status.SUBMITTED})
+        self.assertEqual(list(submitted.context['complaints']), [self.ict_complaint])
+
+        resolved = self.client.get(HANDLER_QUEUE, {'filter': Complaint.Status.RESOLVED})
+        self.assertEqual(list(resolved.context['complaints']), [])
+
+        bogus = self.client.get(HANDLER_QUEUE, {'filter': 'nonsense'})
+        self.assertEqual(bogus.context['selected_filter'], '')
+        self.assertEqual(list(bogus.context['complaints']), [self.ict_complaint])
+
+
+class AssignmentTests(HandlerTestCase):
+
+    def test_assign_to_me_claims_it_and_notifies_the_student(self):
+        from .models import Complaint, Notification, StatusHistory
+
+        self.client.force_login(self.ict_handler)
+        response = self.client.post(
+            self.queue_url(self.ict_complaint), {'action': 'assign'}
+        )
+        self.assertRedirects(response, self.queue_url(self.ict_complaint))
+
+        self.ict_complaint.refresh_from_db()
+        self.assertEqual(self.ict_complaint.assigned_to, self.ict_handler)
+        self.assertEqual(self.ict_complaint.status, Complaint.Status.ASSIGNED)
+
+        entry = StatusHistory.objects.filter(complaint=self.ict_complaint).last()
+        self.assertEqual(entry.new_status, Complaint.Status.ASSIGNED)
+        self.assertEqual(entry.changed_by, self.ict_handler)
+
+        notification = Notification.objects.get(
+            complaint=self.ict_complaint, user=self.student
+        )
+        self.assertIn("Ife Handler", notification.body)
+
+    def test_cannot_assign_to_another_person(self):
+        """The form carries no recipient; posting one changes nothing."""
+        self.client.force_login(self.ict_handler)
+        self.client.post(self.queue_url(self.ict_complaint), {
+            'action': 'assign',
+            'assigned_to': self.other_ict_handler.pk,
+        })
+        self.ict_complaint.refresh_from_db()
+        self.assertEqual(self.ict_complaint.assigned_to, self.ict_handler)
+
+    def test_assigning_an_already_assigned_complaint_does_not_steal_it(self):
+        self.client.force_login(self.ict_handler)
+        self.client.post(self.queue_url(self.ict_complaint), {'action': 'assign'})
+
+        self.client.force_login(self.other_ict_handler)
+        self.client.post(self.queue_url(self.ict_complaint), {'action': 'assign'})
+
+        self.ict_complaint.refresh_from_db()
+        self.assertEqual(self.ict_complaint.assigned_to, self.ict_handler)
+
+
+class StatusChangeTests(HandlerTestCase):
+
+    def test_each_button_moves_the_complaint_and_notifies(self):
+        from .models import Complaint, Notification, StatusHistory
+
+        self.client.force_login(self.ict_handler)
+        for status in (
+            Complaint.Status.IN_PROGRESS,
+            Complaint.Status.RESOLVED,
+            Complaint.Status.CLOSED,
+        ):
+            with self.subTest(status=status):
+                self.client.post(
+                    self.queue_url(self.ict_complaint),
+                    {'action': 'status', 'status': status},
+                )
+                self.ict_complaint.refresh_from_db()
+                self.assertEqual(self.ict_complaint.status, status)
+
+                entry = StatusHistory.objects.filter(complaint=self.ict_complaint).last()
+                self.assertEqual(entry.new_status, status)
+                self.assertEqual(entry.changed_by, self.ict_handler)
+
+        # One notification per change.
+        self.assertEqual(
+            Notification.objects.filter(
+                complaint=self.ict_complaint, user=self.student
+            ).count(),
+            3,
+        )
+
+    def test_resolving_records_when(self):
+        from .models import Complaint
+
+        self.client.force_login(self.ict_handler)
+        self.client.post(
+            self.queue_url(self.ict_complaint),
+            {'action': 'status', 'status': Complaint.Status.RESOLVED},
+        )
+        self.ict_complaint.refresh_from_db()
+        self.assertIsNotNone(self.ict_complaint.resolved_at)
+
+    def test_a_status_outside_the_buttons_is_refused(self):
+        from .models import Complaint, StatusHistory
+
+        self.client.force_login(self.ict_handler)
+        before = StatusHistory.objects.filter(complaint=self.ict_complaint).count()
+        self.client.post(
+            self.queue_url(self.ict_complaint),
+            {'action': 'status', 'status': 'deleted'},
+        )
+        self.ict_complaint.refresh_from_db()
+        self.assertEqual(self.ict_complaint.status, Complaint.Status.SUBMITTED)
+        self.assertEqual(
+            StatusHistory.objects.filter(complaint=self.ict_complaint).count(), before
+        )
+
+    def test_setting_the_current_status_again_writes_no_history(self):
+        from .models import Complaint, StatusHistory
+
+        self.client.force_login(self.ict_handler)
+        self.client.post(
+            self.queue_url(self.ict_complaint),
+            {'action': 'status', 'status': Complaint.Status.IN_PROGRESS},
+        )
+        before = StatusHistory.objects.filter(complaint=self.ict_complaint).count()
+        self.client.post(
+            self.queue_url(self.ict_complaint),
+            {'action': 'status', 'status': Complaint.Status.IN_PROGRESS},
+        )
+        self.assertEqual(
+            StatusHistory.objects.filter(complaint=self.ict_complaint).count(), before
+        )
+
+
+class HandlerMessageTests(HandlerTestCase):
+
+    def test_public_reply_notifies_the_student(self):
+        from .models import Message, Notification
+
+        self.client.force_login(self.ict_handler)
+        self.client.post(self.queue_url(self.ict_complaint), {
+            'action': 'message',
+            'body': "We have reset your portal password.",
+        })
+
+        message = Message.objects.get(body__startswith="We have reset")
+        self.assertFalse(message.is_internal)
+        self.assertEqual(message.author, self.ict_handler)
+        self.assertEqual(
+            Notification.objects.filter(
+                complaint=self.ict_complaint, user=self.student
+            ).count(),
+            1,
+        )
+
+    def test_internal_note_does_not_notify_the_student(self):
+        from .models import Message, Notification
+
+        self.client.force_login(self.ict_handler)
+        self.client.post(self.queue_url(self.ict_complaint), {
+            'action': 'message',
+            'body': "Third complaint from this student this month.",
+            'is_internal': 'on',
+        })
+
+        message = Message.objects.get(body__startswith="Third complaint")
+        self.assertTrue(message.is_internal)
+        self.assertEqual(
+            Notification.objects.filter(complaint=self.ict_complaint).count(), 0
+        )
+
+    def test_handler_sees_both_kinds_the_student_sees_only_one(self):
+        """The same complaint, read from both sides."""
+        from .models import Message
+
+        public = Message.objects.create(
+            complaint=self.ict_complaint, author=self.ict_handler,
+            body="PUBLIC-we-are-on-it", is_internal=False,
+        )
+        internal = Message.objects.create(
+            complaint=self.ict_complaint, author=self.ict_handler,
+            body="INTERNALSECRET-escalate-this", is_internal=True,
+        )
+
+        self.client.force_login(self.ict_handler)
+        staff_page = self.client.get(self.queue_url(self.ict_complaint))
+        self.assertEqual(list(staff_page.context['thread']), [public, internal])
+        self.assertContains(staff_page, "INTERNALSECRET")
+        self.assertContains(staff_page, "Staff only")
+
+        self.client.force_login(self.student)
+        student_page = self.client.get(f"/complaints/{self.ict_complaint.reference_no}/")
+        self.assertEqual(list(student_page.context['thread']), [public])
+        self.assertNotContains(student_page, "INTERNALSECRET")
+
+    def test_an_empty_message_is_rejected_and_creates_nothing(self):
+        from .models import Message
+
+        self.client.force_login(self.ict_handler)
+        response = self.client.post(
+            self.queue_url(self.ict_complaint), {'action': 'message', 'body': ''}
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Message.objects.filter(complaint=self.ict_complaint).count(), 0)

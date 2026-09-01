@@ -43,6 +43,15 @@ urlpatterns = [
         name='complaint_detail',
     ),
 
+    # The handler's queue. Same reasoning as the student detail URL: addressed
+    # by reference_no, and there is no 'queue/new/' to collide with because
+    # staff do not file complaints.
+    path(
+        'queue/<str:reference_no>/',
+        views.queue_detail,
+        name='queue_detail',
+    ),
+
     # Notifications.
     path('notifications/', views.notification_list, name='notification_list'),
     path(

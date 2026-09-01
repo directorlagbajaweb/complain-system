@@ -7,13 +7,19 @@ from django.contrib import messages
 from django.contrib.auth import login, logout
 from django.contrib.auth.decorators import login_required
 from django.db import transaction
-from django.db.models import Count
+from django.db.models import Case, Count, IntegerField, Value, When
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.http import require_POST
 
 from .access import home_url_for, role_required
-from .forms import ComplaintForm, EmailLoginForm, MessageForm, StudentSignupForm
+from .forms import (
+    ComplaintForm,
+    EmailLoginForm,
+    HandlerMessageForm,
+    MessageForm,
+    StudentSignupForm,
+)
 from .models import Attachment, Complaint, Notification, User
 from .notifications import notify
 
@@ -334,15 +340,283 @@ def notification_open(request, pk):
     )
 
 
+# ---------------------------------------------------------------------------
+# The handler side
+# ---------------------------------------------------------------------------
+
+# The status changes a handler can make from the detail page, and the colour
+# of each button. Assigning is a separate action, so ASSIGNED is not offered
+# here; SUBMITTED is not offered because nothing should go back to "nobody has
+# looked at this yet" once somebody has.
+STATUS_ACTIONS = [
+    (Complaint.Status.IN_PROGRESS, "In progress", 'warning'),
+    (Complaint.Status.RESOLVED, "Resolved", 'success'),
+    (Complaint.Status.CLOSED, "Closed", 'dark'),
+]
+
+_ALLOWED_STATUS_CHANGES = {value for value, _, _ in STATUS_ACTIONS}
+
+
+def _complaints_in_scope(request):
+    """
+    Every complaint this staff member is allowed to see.
+
+    The handler equivalent of `_own_complaints()`, and it works the same way:
+    the rule is expressed once, as a filter on the query, so the restricted set
+    is the only thing any handler view ever starts from.
+
+    A complaint has no unit column of its own. The student picks a category,
+    and the category names the office responsible — so "my unit's complaints"
+    is written `category__unit`, following that link in SQL. Storing the unit
+    on the complaint as well would be faster to query and would eventually be
+    wrong: re-routing a category would leave old complaints pointing at the
+    office that used to own them.
+
+    Administrators are not filtered at all. That is the whole difference
+    between the two roles on these pages.
+    """
+    complaints = Complaint.objects.select_related(
+        'student', 'student__academic_department',
+        'category', 'category__unit', 'assigned_to',
+    )
+
+    if request.user.is_admin_role:
+        return complaints
+
+    # A handler with no unit is a broken account — `User.clean()` forbids it —
+    # but if one exists, the safe reading of "complaints for your unit" is
+    # none, not all.
+    if not request.user.unit_id:
+        return complaints.none()
+
+    return complaints.filter(category__unit_id=request.user.unit_id)
+
+
 @role_required(User.Role.HANDLER, User.Role.ADMIN)
 def handler_queue(request):
-    """/queue/ — where a handler will see the complaints routed to their unit.
+    """
+    /queue/ — the work queue.
 
     Administrators may look at it too. It is not their landing page — they
-    still start on /dashboard/ — but nothing about the queue needs hiding from
-    someone who can already see every complaint in the system.
+    still start on /dashboard/ — but they see every unit rather than one.
     """
-    return render(request, 'dashboards/handler_queue.html')
+    in_scope = _complaints_in_scope(request)
+
+    counts = dict(
+        in_scope.values_list('status').annotate(total=Count('id')).order_by()
+    )
+    unassigned_count = in_scope.filter(assigned_to__isnull=True).count()
+    mine_count = in_scope.filter(assigned_to=request.user).count()
+
+    # One button is active at a time, so one query parameter carries the
+    # choice. Anything unrecognised falls back to "All" rather than showing an
+    # empty queue, which would look like there is no work to do.
+    selected = request.GET.get('filter') or ''
+
+    if selected == 'unassigned':
+        complaints = in_scope.filter(assigned_to__isnull=True)
+    elif selected == 'mine':
+        complaints = in_scope.filter(assigned_to=request.user)
+    elif selected in Complaint.Status.values:
+        complaints = in_scope.filter(status=selected)
+    else:
+        selected = ''
+        complaints = in_scope
+
+    # Default order: unassigned first, then oldest first. A complaint nobody
+    # has picked up is the one most likely to be forgotten, and among those the
+    # one that has been waiting longest has the best claim on a handler's
+    # attention. Complaint.Meta orders by newest first, which is right for a
+    # student looking at their own history and exactly wrong here, so this
+    # order_by replaces it.
+    complaints = complaints.annotate(
+        assignment_rank=Case(
+            When(assigned_to__isnull=True, then=Value(0)),
+            default=Value(1),
+            output_field=IntegerField(),
+        )
+    ).order_by('assignment_rank', 'created_at')
+
+    filters = (
+        [('', "All", sum(counts.values()))]
+        + [
+            (value, label, counts.get(value, 0))
+            for value, label in Complaint.Status.choices
+        ]
+        + [
+            ('unassigned', "Unassigned", unassigned_count),
+            ('mine', "Assigned to me", mine_count),
+        ]
+    )
+
+    return render(request, 'handler/queue.html', {
+        'complaints': complaints,
+        'filters': filters,
+        'selected_filter': selected,
+        'has_any_complaints': bool(counts),
+    })
+
+
+@role_required(User.Role.HANDLER, User.Role.ADMIN)
+def queue_detail(request, reference_no):
+    """
+    /queue/<reference_no>/ — one complaint, with the actions a handler can take.
+
+    Three different POSTs come back to this URL, told apart by a hidden
+    `action` field: claiming the complaint, changing its status, and adding a
+    message. They share a page, so they share a handler.
+    """
+    complaint = get_object_or_404(
+        _complaints_in_scope(request), reference_no=reference_no
+    )
+
+    form = HandlerMessageForm()
+
+    if request.method == 'POST':
+        action = request.POST.get('action')
+
+        if action == 'assign':
+            form = _handle_assign(request, complaint)
+        elif action == 'status':
+            form = _handle_status_change(request, complaint)
+        elif action == 'message':
+            form = _handle_handler_message(request, complaint)
+        else:
+            messages.error(request, "Unrecognised action.")
+
+        if form is None:
+            # Redirect after a successful POST, so a refresh does not repeat
+            # the action. A form comes back instead only when it failed
+            # validation and has errors to show.
+            return redirect('queue_detail', reference_no=complaint.reference_no)
+
+    # Unlike the student page, nothing is filtered out of this thread —
+    # internal notes are exactly what staff come here to read.
+    thread = (
+        complaint.messages.select_related('author').order_by('created_at')
+    )
+    timeline = complaint.status_history.select_related('changed_by').order_by(
+        'changed_at'
+    )
+
+    days_to_resolve = None
+    if complaint.resolved_at:
+        days_to_resolve = (complaint.resolved_at - complaint.created_at).days
+
+    return render(request, 'handler/queue_detail.html', {
+        'complaint': complaint,
+        'thread': thread,
+        'timeline': timeline,
+        'attachments': complaint.attachments.all(),
+        'form': form,
+        'status_actions': STATUS_ACTIONS,
+        'days_to_resolve': days_to_resolve,
+    })
+
+
+def _handle_assign(request, complaint):
+    """
+    "Assign to me". Returns None on success, or a form to re-render.
+
+    There is no recipient in the request. The complaint is assigned to
+    `request.user` and to nobody else — not because a check rejects other
+    values, but because no other value is ever read. Handing a complaint to a
+    different handler is administrator work, and arrives in Phase 5.
+    """
+    if complaint.assigned_to_id is not None:
+        messages.error(
+            request,
+            f"{complaint.reference_no} is already assigned to "
+            f"{complaint.assigned_to.full_name}.",
+        )
+        return None
+
+    with transaction.atomic():
+        complaint.assigned_to = request.user
+        complaint.status = Complaint.Status.ASSIGNED
+        complaint._changed_by = request.user
+        complaint.save()
+
+        notify(
+            complaint.student,
+            complaint,
+            f"{complaint.reference_no} has been assigned to "
+            f"{request.user.full_name} in {complaint.unit.name}.",
+        )
+
+    messages.success(request, f"{complaint.reference_no} is now assigned to you.")
+    return None
+
+
+def _handle_status_change(request, complaint):
+    """Move the complaint to one of the three statuses the buttons offer."""
+    new_status = request.POST.get('status')
+
+    if new_status not in _ALLOWED_STATUS_CHANGES:
+        messages.error(request, "That is not a status you can set from here.")
+        return None
+
+    if new_status == complaint.status:
+        messages.info(
+            request,
+            f"{complaint.reference_no} is already {complaint.get_status_display().lower()}.",
+        )
+        return None
+
+    with transaction.atomic():
+        complaint.status = new_status
+        # Read by Complaint.save() when it writes the StatusHistory row, so the
+        # trail records which handler made the change rather than "the system".
+        complaint._changed_by = request.user
+        complaint.save()
+
+        notify(
+            complaint.student,
+            complaint,
+            f"{complaint.reference_no} is now "
+            f"{complaint.get_status_display().lower()}.",
+        )
+
+    messages.success(
+        request,
+        f"{complaint.reference_no} moved to {complaint.get_status_display()}.",
+    )
+    return None
+
+
+def _handle_handler_message(request, complaint):
+    """
+    Add a reply or an internal note.
+
+    The checkbox decides two things at once, and they have to agree: an
+    internal note is invisible to the student, so notifying them about it would
+    be a message pointing at something they cannot read.
+    """
+    form = HandlerMessageForm(request.POST)
+    if not form.is_valid():
+        return form  # re-render with errors
+
+    with transaction.atomic():
+        message = form.save(commit=False)
+        message.complaint = complaint
+        message.author = request.user
+        message.save()
+
+        if not message.is_internal:
+            notify(
+                complaint.student,
+                complaint,
+                f"{request.user.full_name} replied to your complaint "
+                f"{complaint.reference_no}.",
+            )
+
+    messages.success(
+        request,
+        "Internal note added — the student cannot see it."
+        if message.is_internal
+        else "Your reply has been sent to the student.",
+    )
+    return None
 
 
 @role_required(User.Role.ADMIN)

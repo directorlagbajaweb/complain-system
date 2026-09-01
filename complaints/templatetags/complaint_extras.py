@@ -8,6 +8,7 @@ redesign should not mean editing models.py.
 """
 
 from django import template
+from django.utils import timezone
 
 from complaints.models import Complaint
 
@@ -42,3 +43,16 @@ def status_colour(status):
 def priority_colour(priority):
     """{{ complaint.priority|priority_colour }} -> 'danger'"""
     return PRIORITY_COLOURS.get(priority, 'secondary')
+
+
+@register.filter
+def days_open(complaint):
+    """
+    Whole days this complaint has been open: from the day it was filed to
+    today, or to the day it was resolved if it has been.
+
+    A resolved complaint stops ageing — otherwise a queue sorted by "days open"
+    would push long-settled work back to the top forever.
+    """
+    end = complaint.resolved_at or timezone.now()
+    return (end - complaint.created_at).days

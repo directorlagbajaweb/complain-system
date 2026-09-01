@@ -1,0 +1,140 @@
+{% extends 'base.html' %}
+{% load complaint_extras %}
+
+{% block title %}Complaint queue{% endblock %}
+
+{% block content %}
+
+  <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
+    <div>
+      <h1 class="h3 mb-0">Complaint queue</h1>
+      <p class="text-body-secondary small mb-0">
+        {% if user.is_admin_role %}
+          Every unit.
+        {% else %}
+          {{ user.unit.name }}.
+        {% endif %}
+        Unassigned first, then longest waiting.
+      </p>
+    </div>
+  </div>
+
+  {% comment %}
+    One row of buttons covering three different questions — status, whether
+    anyone has picked it up, and whether it is mine. They are mutually
+    exclusive in practice, so a single ?filter= parameter carries the choice
+    and each filtered queue keeps its own bookmarkable URL.
+  {% endcomment %}
+  <div class="btn-group flex-wrap mb-4" role="group" aria-label="Filter the queue">
+    {% for value, label, count in filters %}
+      <a href="{% if value %}?filter={{ value }}{% else %}{% url 'handler_queue' %}{% endif %}"
+         class="btn btn-sm {% if selected_filter == value %}btn-secondary{% else %}btn-outline-secondary{% endif %}">
+        {{ label }}
+        <span class="badge text-bg-light ms-1">{{ count }}</span>
+      </a>
+    {% endfor %}
+  </div>
+
+  {% if complaints %}
+
+    <div class="card shadow-sm">
+      <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0">
+          <thead class="table-light">
+            <tr>
+              <th scope="col">Reference</th>
+              <th scope="col">Subject</th>
+              <th scope="col">Student</th>
+              <th scope="col">Status</th>
+              <th scope="col">Priority</th>
+              <th scope="col">Filed</th>
+              <th scope="col" class="text-end">Days open</th>
+              <th scope="col">Assigned to</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for complaint in complaints %}
+              <tr>
+                <td class="text-nowrap">
+                  <a href="{% url 'queue_detail' complaint.reference_no %}"
+                     class="fw-semibold text-decoration-none">
+                    {{ complaint.reference_no }}
+                  </a>
+                </td>
+                <td>
+                  <a href="{% url 'queue_detail' complaint.reference_no %}"
+                     class="text-body text-decoration-none">
+                    {{ complaint.subject }}
+                  </a>
+                  {% comment %}
+                    Admins see every unit, so the row has to say which office a
+                    complaint belongs to. For a handler that column would read
+                    the same on every row, so it is left off.
+                  {% endcomment %}
+                  {% if user.is_admin_role %}
+                    <span class="d-block text-body-secondary small">
+                      {{ complaint.unit.name }}
+                    </span>
+                  {% endif %}
+                </td>
+                <td class="text-body-secondary">{{ complaint.student.full_name }}</td>
+                <td>
+                  {% include 'partials/_status_badge.html' with status=complaint.status label=complaint.get_status_display %}
+                </td>
+                <td>
+                  <span class="badge text-bg-{{ complaint.priority|priority_colour }}">
+                    {{ complaint.get_priority_display }}
+                  </span>
+                </td>
+                <td class="text-nowrap text-body-secondary">
+                  {{ complaint.created_at|date:"j M Y" }}
+                </td>
+                <td class="text-end text-body-secondary">{{ complaint|days_open }}</td>
+                <td>
+                  {% if complaint.assigned_to %}
+                    <span class="text-body-secondary">
+                      {{ complaint.assigned_to.full_name }}
+                      {% if complaint.assigned_to_id == user.id %}
+                        <span class="badge text-bg-light fw-normal">You</span>
+                      {% endif %}
+                    </span>
+                  {% else %}
+                    <span class="badge text-bg-warning">Unassigned</span>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  {% elif has_any_complaints %}
+
+    <div class="card shadow-sm">
+      <div class="card-body text-center py-5">
+        <p class="mb-2">Nothing in the queue matches that filter.</p>
+        <a href="{% url 'handler_queue' %}" class="btn btn-outline-secondary btn-sm">
+          Show the whole queue
+        </a>
+      </div>
+    </div>
+
+  {% else %}
+
+    <div class="card shadow-sm">
+      <div class="card-body text-center py-5">
+        <h2 class="h5">Nothing waiting</h2>
+        <p class="text-body-secondary mb-0">
+          {% if user.is_admin_role %}
+            No complaints have been filed yet.
+          {% else %}
+            No complaints have been routed to {{ user.unit.name }} yet.
+          {% endif %}
+        </p>
+      </div>
+    </div>
+
+  {% endif %}
+
+{% endblock content %}

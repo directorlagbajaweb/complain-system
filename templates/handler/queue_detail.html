@@ -1,0 +1,271 @@
+{% extends 'base.html' %}
+{% load complaint_extras %}
+
+{% block title %}{{ complaint.reference_no }} — {{ complaint.subject }}{% endblock %}
+
+{% block content %}
+
+<nav aria-label="breadcrumb">
+  <ol class="breadcrumb small">
+    <li class="breadcrumb-item"><a href="{% url 'handler_queue' %}">Complaint queue</a></li>
+    <li class="breadcrumb-item active" aria-current="page">{{ complaint.reference_no }}</li>
+  </ol>
+</nav>
+
+<div class="row g-4">
+
+  {# ---- Left column: the complaint, the actions, the thread ---- #}
+  <div class="col-lg-8">
+
+    <div class="card shadow-sm mb-4">
+      <div class="card-body p-4">
+
+        <div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3">
+          <div>
+            <div class="text-body-secondary small">{{ complaint.reference_no }}</div>
+            <h1 class="h4 mb-0">{{ complaint.subject }}</h1>
+          </div>
+          <div class="text-nowrap">
+            {% include 'partials/_status_badge.html' with status=complaint.status label=complaint.get_status_display %}
+            <span class="badge text-bg-{{ complaint.priority|priority_colour }}">
+              {{ complaint.get_priority_display }} priority
+            </span>
+          </div>
+        </div>
+
+        <dl class="row small mb-3">
+          <dt class="col-sm-3 text-body-secondary fw-normal">Category</dt>
+          <dd class="col-sm-9">{{ complaint.category.name }}</dd>
+
+          <dt class="col-sm-3 text-body-secondary fw-normal">Unit</dt>
+          <dd class="col-sm-9">{{ complaint.unit.name }}</dd>
+
+          <dt class="col-sm-3 text-body-secondary fw-normal">Filed</dt>
+          <dd class="col-sm-9">
+            {{ complaint.created_at|date:"j F Y, g:i a" }}
+            <span class="text-body-secondary">
+              — {{ complaint|days_open }} day{{ complaint|days_open|pluralize }} open
+            </span>
+          </dd>
+
+          <dt class="col-sm-3 text-body-secondary fw-normal">Assigned to</dt>
+          <dd class="col-sm-9">
+            {% if complaint.assigned_to %}
+              {{ complaint.assigned_to.full_name }}
+              {% if complaint.assigned_to_id == user.id %}
+                <span class="badge text-bg-light fw-normal">You</span>
+              {% endif %}
+            {% else %}
+              <span class="badge text-bg-warning">Unassigned</span>
+            {% endif %}
+          </dd>
+
+          {% if days_to_resolve is not None %}
+            <dt class="col-sm-3 text-body-secondary fw-normal">Time to resolve</dt>
+            <dd class="col-sm-9">
+              {% if days_to_resolve == 0 %}Same day{% else %}{{ days_to_resolve }} day{{ days_to_resolve|pluralize }}{% endif %}
+            </dd>
+          {% endif %}
+        </dl>
+
+        <hr>
+
+        {% comment %}
+          The student's identifying details. These are on the handler's page
+          and not on the student's own, because the student already knows their
+          matric number — the handler is the one who needs it to look the
+          person up in another system.
+        {% endcomment %}
+        <h2 class="h6 text-body-secondary">Student</h2>
+        <dl class="row small mb-0">
+          <dt class="col-sm-3 text-body-secondary fw-normal">Name</dt>
+          <dd class="col-sm-9">{{ complaint.student.full_name }}</dd>
+
+          <dt class="col-sm-3 text-body-secondary fw-normal">Matric number</dt>
+          <dd class="col-sm-9">{{ complaint.student.matric_no|default:"—" }}</dd>
+
+          <dt class="col-sm-3 text-body-secondary fw-normal">Department</dt>
+          <dd class="col-sm-9">{{ complaint.student.academic_department.name|default:"—" }}</dd>
+
+          <dt class="col-sm-3 text-body-secondary fw-normal">Email</dt>
+          <dd class="col-sm-9">{{ complaint.student.email }}</dd>
+        </dl>
+
+        <hr>
+
+        <h2 class="h6 text-body-secondary">What the student reported</h2>
+        <div class="mb-0">{{ complaint.description|linebreaks }}</div>
+
+        {% if attachments %}
+          <hr>
+          <h2 class="h6 text-body-secondary">Attachments</h2>
+          <ul class="list-unstyled mb-0">
+            {% for attachment in attachments %}
+              <li>
+                <a href="{{ attachment.file.url }}" target="_blank" rel="noopener">
+                  {{ attachment.filename }}
+                </a>
+                <span class="text-body-secondary small">
+                  — added {{ attachment.uploaded_at|date:"j M Y" }}
+                </span>
+              </li>
+            {% endfor %}
+          </ul>
+        {% endif %}
+
+      </div>
+    </div>
+
+    {# ---- Actions ---- #}
+    <div class="card shadow-sm mb-4">
+      <div class="card-body p-4">
+
+        <h2 class="h5 mb-3">Actions</h2>
+
+        <div class="d-flex flex-wrap gap-2">
+
+          {% comment %}
+            "Assign to me" appears only while nobody holds the complaint. The
+            form carries no recipient — the view assigns it to whoever is
+            signed in, so there is no field here for a handler to point at
+            somebody else. Reassignment is administrator work, in Phase 5.
+          {% endcomment %}
+          {% if not complaint.assigned_to %}
+            <form method="post" class="d-inline">
+              {% csrf_token %}
+              <input type="hidden" name="action" value="assign">
+              <button type="submit" class="btn btn-primary">Assign to me</button>
+            </form>
+          {% endif %}
+
+          {% for value, label, colour in status_actions %}
+            <form method="post" class="d-inline">
+              {% csrf_token %}
+              <input type="hidden" name="action" value="status">
+              <input type="hidden" name="status" value="{{ value }}">
+              <button type="submit"
+                      class="btn btn-outline-{{ colour }}"
+                      {% if complaint.status == value %}disabled{% endif %}>
+                {% if complaint.status == value %}
+                  {{ label }} (current)
+                {% else %}
+                  Mark {{ label|lower }}
+                {% endif %}
+              </button>
+            </form>
+          {% endfor %}
+
+        </div>
+
+      </div>
+    </div>
+
+    {# ---- The full thread, internal notes included ---- #}
+    <div class="card shadow-sm">
+      <div class="card-body p-4">
+
+        <h2 class="h5 mb-3">Messages</h2>
+
+        {% comment %}
+          This thread is unfiltered — the whole point of the handler's page is
+          that internal notes are visible here. They are marked clearly so that
+          nobody writes to the student thinking they are writing to a colleague,
+          or reads a colleague's note as something the student has seen.
+        {% endcomment %}
+        {% if thread %}
+          <ul class="list-unstyled mb-4">
+            {% for message in thread %}
+              <li class="border-start border-3 ps-3 mb-3 py-2
+                         {% if message.is_internal %}border-warning bg-warning-subtle rounded-end{% endif %}">
+                <div class="d-flex flex-wrap justify-content-between gap-2">
+                  <span class="fw-semibold">
+                    {% if message.author %}
+                      {{ message.author.full_name }}
+                      {% if message.author_id == complaint.student_id %}
+                        <span class="badge text-bg-light fw-normal">Student</span>
+                      {% elif message.author_id == user.id %}
+                        <span class="badge text-bg-light fw-normal">You</span>
+                      {% endif %}
+                    {% else %}
+                      <span class="fst-italic text-body-secondary">Former staff member</span>
+                    {% endif %}
+                    {% if message.is_internal %}
+                      <span class="badge text-bg-warning">Staff only</span>
+                    {% endif %}
+                  </span>
+                  <span class="text-body-secondary small">
+                    {{ message.created_at|date:"j M Y, g:i a" }}
+                  </span>
+                </div>
+                <div class="mt-1">{{ message.body|linebreaks }}</div>
+              </li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p class="text-body-secondary">No messages yet.</p>
+        {% endif %}
+
+        <form method="post" novalidate>
+          {% csrf_token %}
+          <input type="hidden" name="action" value="message">
+
+          {% include 'partials/_field.html' with field=form.body %}
+
+          <div class="form-check mb-3">
+            {{ form.is_internal }}
+            <label class="form-check-label" for="{{ form.is_internal.id_for_label }}">
+              {{ form.is_internal.label }}
+            </label>
+            <div class="form-text">
+              Leave this unticked to reply to the student. Ticked, the note stays
+              between staff and the student is not notified.
+            </div>
+          </div>
+
+          <button type="submit" class="btn btn-primary">Send</button>
+        </form>
+
+      </div>
+    </div>
+
+  </div>
+
+  {# ---- Right column: the progress timeline ---- #}
+  <div class="col-lg-4">
+    <div class="card shadow-sm">
+      <div class="card-body p-4">
+
+        <h2 class="h5 mb-3">Progress</h2>
+
+        <ul class="list-unstyled mb-0">
+          {% for entry in timeline %}
+            <li class="ps-4 pb-4 position-relative
+                       {% if not forloop.last %}border-start{% endif %}"
+                style="margin-left: 0.35rem;">
+              <span class="position-absolute top-0 start-0 translate-middle-x
+                           rounded-circle d-inline-block
+                           bg-{{ entry.new_status|status_colour }}"
+                    style="width: 0.75rem; height: 0.75rem; margin-top: 0.25rem;"></span>
+
+              <div class="fw-semibold">{{ entry.get_new_status_display }}</div>
+              <div class="text-body-secondary small">
+                {{ entry.changed_at|date:"j M Y, g:i a" }}
+              </div>
+              <div class="text-body-secondary small">
+                {% if entry.changed_by %}
+                  by {{ entry.changed_by.full_name }}
+                {% else %}
+                  by the system
+                {% endif %}
+              </div>
+            </li>
+          {% endfor %}
+        </ul>
+
+      </div>
+    </div>
+  </div>
+
+</div>
+
+{% endblock content %}
