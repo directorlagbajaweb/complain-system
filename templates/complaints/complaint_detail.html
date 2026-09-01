@@ -1,0 +1,200 @@
+{% extends 'base.html' %}
+{% load complaint_extras %}
+
+{% block title %}{{ complaint.reference_no }} — {{ complaint.subject }}{% endblock %}
+
+{% block content %}
+
+<nav aria-label="breadcrumb">
+  <ol class="breadcrumb small">
+    <li class="breadcrumb-item"><a href="{% url 'student_home' %}">My complaints</a></li>
+    <li class="breadcrumb-item active" aria-current="page">{{ complaint.reference_no }}</li>
+  </ol>
+</nav>
+
+<div class="row g-4">
+
+  {# ---- Left column: the complaint and the conversation ---- #}
+  <div class="col-lg-8">
+
+    <div class="card shadow-sm mb-4">
+      <div class="card-body p-4">
+
+        <div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3">
+          <div>
+            <div class="text-body-secondary small">{{ complaint.reference_no }}</div>
+            <h1 class="h4 mb-0">{{ complaint.subject }}</h1>
+          </div>
+          <div class="text-nowrap">
+            {% include 'partials/_status_badge.html' with status=complaint.status label=complaint.get_status_display %}
+            <span class="badge text-bg-{{ complaint.priority|priority_colour }}">
+              {{ complaint.get_priority_display }} priority
+            </span>
+          </div>
+        </div>
+
+        <dl class="row small mb-3">
+          <dt class="col-sm-3 text-body-secondary fw-normal">Category</dt>
+          <dd class="col-sm-9">{{ complaint.category.name }}</dd>
+
+          <dt class="col-sm-3 text-body-secondary fw-normal">Handled by</dt>
+          <dd class="col-sm-9">{{ complaint.unit.name }}</dd>
+
+          <dt class="col-sm-3 text-body-secondary fw-normal">Filed</dt>
+          <dd class="col-sm-9">{{ complaint.created_at|date:"j F Y, g:i a" }}</dd>
+
+          <dt class="col-sm-3 text-body-secondary fw-normal">Assigned to</dt>
+          <dd class="col-sm-9">
+            {% if complaint.assigned_to %}
+              {{ complaint.assigned_to.full_name }}
+            {% else %}
+              <span class="fst-italic text-body-secondary">Unassigned</span>
+            {% endif %}
+          </dd>
+
+          {% if days_to_resolve is not None %}
+            <dt class="col-sm-3 text-body-secondary fw-normal">Time to resolve</dt>
+            <dd class="col-sm-9">
+              {% comment %}
+                `days_to_resolve` is 0 for anything settled the same day, which
+                "0 days" states badly. Say it in words instead.
+              {% endcomment %}
+              {% if days_to_resolve == 0 %}
+                Same day
+              {% else %}
+                {{ days_to_resolve }} day{{ days_to_resolve|pluralize }}
+              {% endif %}
+            </dd>
+          {% endif %}
+        </dl>
+
+        <hr>
+
+        <h2 class="h6 text-body-secondary">What happened</h2>
+        {% comment %}
+          `linebreaks` turns the stored newlines into paragraphs and escapes
+          the text on the way through.
+        {% endcomment %}
+        <div class="mb-0">{{ complaint.description|linebreaks }}</div>
+
+        {% if attachments %}
+          <hr>
+          <h2 class="h6 text-body-secondary">Attachments</h2>
+          <ul class="list-unstyled mb-0">
+            {% for attachment in attachments %}
+              <li>
+                <a href="{{ attachment.file.url }}" target="_blank" rel="noopener">
+                  {{ attachment.filename }}
+                </a>
+                <span class="text-body-secondary small">
+                  — added {{ attachment.uploaded_at|date:"j M Y" }}
+                </span>
+              </li>
+            {% endfor %}
+          </ul>
+        {% endif %}
+
+      </div>
+    </div>
+
+    {# ---- The message thread ---- #}
+    <div class="card shadow-sm">
+      <div class="card-body p-4">
+
+        <h2 class="h5 mb-3">Messages</h2>
+
+        {% comment %}
+          `thread` was filtered in the view with .filter(is_internal=False).
+          Staff-only notes were never fetched from the database, so there is
+          nothing here that could accidentally render one — this template has
+          no way to reach them even if someone edited it carelessly.
+        {% endcomment %}
+        {% if thread %}
+          <ul class="list-unstyled mb-4">
+            {% for message in thread %}
+              <li class="border-start border-3 ps-3 mb-3">
+                <div class="d-flex flex-wrap justify-content-between gap-2">
+                  <span class="fw-semibold">
+                    {% if message.author %}
+                      {{ message.author.full_name }}
+                      {% if message.author_id == complaint.student_id %}
+                        <span class="badge text-bg-light fw-normal">You</span>
+                      {% endif %}
+                    {% else %}
+                      <span class="fst-italic text-body-secondary">Former staff member</span>
+                    {% endif %}
+                  </span>
+                  <span class="text-body-secondary small">
+                    {{ message.created_at|date:"j M Y, g:i a" }}
+                  </span>
+                </div>
+                <div class="mt-1">{{ message.body|linebreaks }}</div>
+              </li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p class="text-body-secondary">
+            No messages yet. Add anything that might help the office handling this.
+          </p>
+        {% endif %}
+
+        <form method="post" novalidate>
+          {% csrf_token %}
+          {% include 'partials/_field.html' with field=form.body %}
+          <button type="submit" class="btn btn-primary">Send reply</button>
+        </form>
+
+      </div>
+    </div>
+
+  </div>
+
+  {# ---- Right column: the progress timeline ---- #}
+  <div class="col-lg-4">
+    <div class="card shadow-sm">
+      <div class="card-body p-4">
+
+        <h2 class="h5 mb-3">Progress</h2>
+
+        {% comment %}
+          Built entirely from StatusHistory, so it shows what actually happened
+          rather than a guess drawn from the current status. The first row —
+          the one with no old_status — is written when the complaint is created,
+          which is why the timeline can start at "Submitted" instead of
+          appearing from nowhere.
+
+          The vertical line is a left border on each entry; the dot is a small
+          rounded span pulled onto that border with a negative margin.
+        {% endcomment %}
+        <ul class="list-unstyled mb-0">
+          {% for entry in timeline %}
+            <li class="ps-4 pb-4 position-relative
+                       {% if not forloop.last %}border-start{% endif %}"
+                style="margin-left: 0.35rem;">
+              <span class="position-absolute top-0 start-0 translate-middle-x
+                           rounded-circle d-inline-block
+                           bg-{{ entry.new_status|status_colour }}"
+                    style="width: 0.75rem; height: 0.75rem; margin-top: 0.25rem;"></span>
+
+              <div class="fw-semibold">{{ entry.get_new_status_display }}</div>
+              <div class="text-body-secondary small">
+                {{ entry.changed_at|date:"j M Y, g:i a" }}
+              </div>
+              <div class="text-body-secondary small">
+                {% if entry.changed_by %}
+                  by {{ entry.changed_by.full_name }}
+                {% else %}
+                  by the system
+                {% endif %}
+              </div>
+            </li>
+          {% endfor %}
+        </ul>
+
+      </div>
+    </div>
+  </div>
+
+</div>
+
+{% endblock content %}

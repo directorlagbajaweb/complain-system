@@ -275,3 +275,308 @@ class SignedInRedirectTests(TestCase):
 
     def test_root_sends_anonymous_users_to_login(self):
         self.assertRedirects(self.client.get('/'), reverse('login'))
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: the student side
+# ---------------------------------------------------------------------------
+
+
+class StudentComplaintTestCase(TestCase):
+    """Shared setup: two students, a handler, and a complaint owned by each."""
+
+    @classmethod
+    def setUpTestData(cls):
+        from .models import Category, Complaint, Unit
+
+        cls.department = AcademicDepartment.objects.create(name="Computer Science")
+        cls.unit = Unit.objects.create(name="ICT")
+        cls.other_unit = Unit.objects.create(name="Bursary")
+        cls.category = Category.objects.create(name="Student portal access", unit=cls.unit)
+
+        cls.student = User.objects.create_user(
+            email='ada@school.edu', password=PASSWORD, full_name="Ada Student",
+            matric_no='CSC/2023/001', academic_department=cls.department,
+        )
+        cls.other_student = User.objects.create_user(
+            email='bola@school.edu', password=PASSWORD, full_name="Bola Student",
+            matric_no='CSC/2023/002', academic_department=cls.department,
+        )
+        cls.handler = User.objects.create_user(
+            email='handler@school.edu', password=PASSWORD, full_name="Chidi Handler",
+            role=User.Role.HANDLER, unit=cls.unit,
+        )
+
+        cls.mine = Complaint.objects.create(
+            student=cls.student, category=cls.category,
+            subject="Cannot log in to the portal",
+            description="It rejects my matric number.",
+        )
+        cls.theirs = Complaint.objects.create(
+            student=cls.other_student, category=cls.category,
+            subject="Portal shows the wrong course list",
+            description="Two courses are missing.",
+        )
+
+
+class OwnershipTests(StudentComplaintTestCase):
+    """A student sees their own complaints and nobody else's."""
+
+    def test_list_shows_only_my_complaints(self):
+        self.client.force_login(self.student)
+        response = self.client.get(STUDENT_HOME)
+        listed = list(response.context['complaints'])
+        self.assertEqual(listed, [self.mine])
+        self.assertNotContains(response, self.theirs.reference_no)
+
+    def test_opening_someone_elses_complaint_is_a_404(self):
+        """Guessing a valid reference belonging to another student must not
+        reveal that it exists."""
+        self.client.force_login(self.student)
+        response = self.client.get(f"/complaints/{self.theirs.reference_no}/")
+        self.assertEqual(response.status_code, 404)
+
+    def test_a_reference_that_does_not_exist_is_also_a_404(self):
+        """Same response as someone else's complaint — the two cases are
+        indistinguishable from outside."""
+        self.client.force_login(self.student)
+        self.assertEqual(self.client.get("/complaints/CMP-2026-9999/").status_code, 404)
+
+    def test_cannot_reply_to_someone_elses_complaint(self):
+        from .models import Message
+
+        self.client.force_login(self.student)
+        response = self.client.post(
+            f"/complaints/{self.theirs.reference_no}/", {'body': "Injected reply"}
+        )
+        self.assertEqual(response.status_code, 404)
+        self.assertFalse(Message.objects.filter(body="Injected reply").exists())
+
+    def test_my_own_complaint_opens(self):
+        self.client.force_login(self.student)
+        response = self.client.get(f"/complaints/{self.mine.reference_no}/")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Cannot log in to the portal")
+
+
+class InternalMessageTests(StudentComplaintTestCase):
+    """The single most important rule on the detail page."""
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        from .models import Message
+
+        cls.public = Message.objects.create(
+            complaint=cls.mine, author=cls.handler,
+            body="We are looking into your portal account now.",
+            is_internal=False,
+        )
+        cls.internal = Message.objects.create(
+            complaint=cls.mine, author=cls.handler,
+            body="SECRET: this student has complained three times this month.",
+            is_internal=True,
+        )
+
+    def test_internal_notes_are_never_shown_to_the_student(self):
+        self.client.force_login(self.student)
+        response = self.client.get(f"/complaints/{self.mine.reference_no}/")
+
+        self.assertContains(response, "We are looking into your portal account now.")
+        self.assertNotContains(response, "SECRET")
+
+    def test_internal_notes_are_not_even_fetched(self):
+        """Excluded in the query, not hidden in the template — so there is
+        nothing in the context a careless template edit could leak."""
+        self.client.force_login(self.student)
+        response = self.client.get(f"/complaints/{self.mine.reference_no}/")
+
+        thread = list(response.context['thread'])
+        self.assertEqual(thread, [self.public])
+        self.assertNotIn(self.internal, thread)
+
+    def test_a_student_reply_is_never_internal(self):
+        from .models import Message
+
+        self.client.force_login(self.student)
+        self.client.post(
+            f"/complaints/{self.mine.reference_no}/",
+            {'body': "Thank you, still not working though.", 'is_internal': 'true'},
+        )
+        reply = Message.objects.get(body__startswith="Thank you")
+        self.assertFalse(reply.is_internal)
+        self.assertEqual(reply.author, self.student)
+
+
+class ComplaintCreateTests(StudentComplaintTestCase):
+
+    def test_filing_a_complaint_sets_up_everything(self):
+        from .models import Complaint, Notification, StatusHistory
+
+        self.client.force_login(self.student)
+        response = self.client.post(reverse('complaint_create'), {
+            'category': self.category.pk,
+            'subject': "No water in Block C",
+            'description': "The taps have been dry since Monday.",
+            'priority': Complaint.Priority.HIGH,
+        })
+
+        complaint = Complaint.objects.get(subject="No water in Block C")
+
+        # Owned by the person who filed it, and given a reference.
+        self.assertEqual(complaint.student, self.student)
+        self.assertTrue(complaint.reference_no.startswith('CMP-'))
+        self.assertEqual(complaint.status, Complaint.Status.SUBMITTED)
+
+        # The first history row exists and credits the student.
+        history = StatusHistory.objects.filter(complaint=complaint)
+        self.assertEqual(history.count(), 1)
+        self.assertIsNone(history.first().old_status)
+        self.assertEqual(history.first().new_status, Complaint.Status.SUBMITTED)
+        self.assertEqual(history.first().changed_by, self.student)
+
+        # A notification was created for the student.
+        notification = Notification.objects.get(complaint=complaint)
+        self.assertEqual(notification.user, self.student)
+        self.assertIn(complaint.reference_no, notification.body)
+        self.assertFalse(notification.is_read)
+
+        # And they land on the detail page with the reference in a message.
+        self.assertRedirects(response, f"/complaints/{complaint.reference_no}/")
+        page = self.client.get(f"/complaints/{complaint.reference_no}/")
+        self.assertContains(page, complaint.reference_no)
+
+    def test_student_cannot_file_on_behalf_of_someone_else(self):
+        from .models import Complaint
+
+        self.client.force_login(self.student)
+        self.client.post(reverse('complaint_create'), {
+            'category': self.category.pk,
+            'subject': "Filed for another",
+            'description': "Trying to set the student field by hand.",
+            'priority': Complaint.Priority.NORMAL,
+            'student': self.other_student.pk,
+            'status': Complaint.Status.RESOLVED,
+            'assigned_to': self.handler.pk,
+        })
+        complaint = Complaint.objects.get(subject="Filed for another")
+        self.assertEqual(complaint.student, self.student)
+        self.assertEqual(complaint.status, Complaint.Status.SUBMITTED)
+        self.assertIsNone(complaint.assigned_to)
+
+    def test_attachment_is_saved(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from .models import Complaint
+
+        self.client.force_login(self.student)
+        self.client.post(reverse('complaint_create'), {
+            'category': self.category.pk,
+            'subject': "Broken window",
+            'description': "See the photo.",
+            'priority': Complaint.Priority.NORMAL,
+            'attachment': SimpleUploadedFile(
+                'window.txt', b'pretend this is a photo', content_type='text/plain'
+            ),
+        })
+        complaint = Complaint.objects.get(subject="Broken window")
+        self.assertEqual(complaint.attachments.count(), 1)
+        self.assertIn('window', complaint.attachments.first().file.name)
+
+    def test_invalid_submission_creates_nothing(self):
+        from .models import Complaint
+
+        self.client.force_login(self.student)
+        before = Complaint.objects.count()
+        response = self.client.post(reverse('complaint_create'), {
+            'category': '', 'subject': '', 'description': '', 'priority': '',
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Complaint.objects.count(), before)
+
+    def test_category_dropdown_is_grouped_by_unit(self):
+        from .models import Category
+
+        Category.objects.create(name="School fees payment", unit=self.other_unit)
+        self.client.force_login(self.student)
+        response = self.client.get(reverse('complaint_create'))
+        self.assertContains(response, '<optgroup label="ICT">', html=False)
+        self.assertContains(response, '<optgroup label="Bursary">', html=False)
+
+
+class StatusFilterTests(StudentComplaintTestCase):
+
+    def test_filter_narrows_to_one_status(self):
+        from .models import Complaint
+
+        resolved = Complaint.objects.create(
+            student=self.student, category=self.category,
+            subject="Already sorted", description="Fixed.",
+            status=Complaint.Status.RESOLVED,
+        )
+        self.client.force_login(self.student)
+
+        response = self.client.get(STUDENT_HOME, {'status': Complaint.Status.RESOLVED})
+        self.assertEqual(list(response.context['complaints']), [resolved])
+
+        response = self.client.get(STUDENT_HOME, {'status': Complaint.Status.SUBMITTED})
+        self.assertEqual(list(response.context['complaints']), [self.mine])
+
+    def test_nonsense_status_falls_back_to_all(self):
+        self.client.force_login(self.student)
+        response = self.client.get(STUDENT_HOME, {'status': 'not-a-status'})
+        self.assertEqual(response.context['selected_status'], '')
+        self.assertEqual(list(response.context['complaints']), [self.mine])
+
+    def test_empty_state_invites_a_first_complaint(self):
+        from .models import Complaint
+
+        Complaint.objects.filter(student=self.student).delete()
+        self.client.force_login(self.student)
+        response = self.client.get(STUDENT_HOME)
+        self.assertContains(response, "File your first complaint")
+
+
+class NotificationTests(StudentComplaintTestCase):
+
+    def setUp(self):
+        from .notifications import notify
+
+        self.notification = notify(self.student, self.mine, "Your complaint was received.")
+
+    def test_unread_count_appears_in_the_navbar(self):
+        self.client.force_login(self.student)
+        response = self.client.get(STUDENT_HOME)
+        self.assertEqual(response.context['unread_notification_count'], 1)
+
+    def test_opening_marks_read_and_goes_to_the_complaint(self):
+        self.client.force_login(self.student)
+        response = self.client.get(
+            reverse('notification_open', args=[self.notification.pk])
+        )
+        self.assertRedirects(response, f"/complaints/{self.mine.reference_no}/")
+        self.notification.refresh_from_db()
+        self.assertTrue(self.notification.is_read)
+
+    def test_cannot_open_someone_elses_notification(self):
+        self.client.force_login(self.other_student)
+        response = self.client.get(
+            reverse('notification_open', args=[self.notification.pk])
+        )
+        self.assertEqual(response.status_code, 404)
+        self.notification.refresh_from_db()
+        self.assertFalse(self.notification.is_read)
+
+    def test_list_shows_only_my_notifications(self):
+        from .notifications import notify
+
+        notify(self.other_student, self.theirs, "Not for Ada.")
+        self.client.force_login(self.student)
+        response = self.client.get(reverse('notification_list'))
+        self.assertContains(response, "Your complaint was received.")
+        self.assertNotContains(response, "Not for Ada.")
+
+    def test_notifications_require_a_login(self):
+        response = self.client.get(reverse('notification_list'))
+        self.assertRedirects(
+            response, f"{reverse('login')}?next={reverse('notification_list')}"
+        )

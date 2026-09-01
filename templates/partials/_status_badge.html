@@ -1,0 +1,6 @@
+{% load complaint_extras %}{% comment %}
+  A status badge. Used as:
+    {% templatetag openblock %} include 'partials/_status_badge.html' with status=complaint.status label=complaint.get_status_display {% templatetag closeblock %}
+  The colour comes from complaint_extras.status_colour so that the list page
+  and the detail page cannot drift apart on what "resolved" looks like.
+{% endcomment %}<span class="badge text-bg-{{ status|status_colour }}">{{ label }}</span>

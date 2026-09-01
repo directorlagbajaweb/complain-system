@@ -68,6 +68,9 @@ TEMPLATES = [
                 'django.template.context_processors.request',
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
+                # Puts the unread notification count in every template, for
+                # the bell in base.html. See complaints/context_processors.py.
+                'complaints.context_processors.notifications',
             ],
         },
     },

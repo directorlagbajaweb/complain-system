@@ -1,0 +1,56 @@
+{% extends 'base.html' %}
+
+{% block title %}Notifications{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-8">
+
+    <h1 class="h3 mb-3">Notifications</h1>
+
+    {% if notifications %}
+      <div class="card shadow-sm">
+        <ul class="list-group list-group-flush">
+          {% for notification in notifications %}
+            {% comment %}
+              Each row links to notification_open, which marks it read and then
+              forwards to the complaint. Going through that view rather than
+              linking straight to the complaint is what makes "clicking it marks
+              it read" true — and it is a GET that changes one boolean the user
+              already owns, which is the one place that trade is worth making.
+            {% endcomment %}
+            <li class="list-group-item {% if not notification.is_read %}list-group-item-light{% endif %}">
+              <a href="{% url 'notification_open' notification.pk %}"
+                 class="d-flex justify-content-between align-items-start gap-3 text-decoration-none text-body">
+                <span>
+                  {% if not notification.is_read %}
+                    <span class="badge rounded-pill text-bg-danger align-middle me-1">New</span>
+                  {% endif %}
+                  <span class="{% if not notification.is_read %}fw-semibold{% endif %}">
+                    {{ notification.body }}
+                  </span>
+                  <span class="d-block text-body-secondary small mt-1">
+                    {{ notification.complaint.reference_no }}
+                  </span>
+                </span>
+                <span class="text-body-secondary small text-nowrap">
+                  {{ notification.created_at|date:"j M Y" }}
+                </span>
+              </a>
+            </li>
+          {% endfor %}
+        </ul>
+      </div>
+    {% else %}
+      <div class="card shadow-sm">
+        <div class="card-body text-center py-5">
+          <p class="mb-0 text-body-secondary">
+            Nothing yet. We'll tell you here when one of your complaints moves.
+          </p>
+        </div>
+      </div>
+    {% endif %}
+
+  </div>
+</div>
+{% endblock content %}

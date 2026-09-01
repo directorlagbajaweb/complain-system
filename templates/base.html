@@ -34,6 +34,28 @@
 
         <div class="collapse navbar-collapse justify-content-end" id="navbarMain">
           <ul class="navbar-nav align-items-md-center">
+
+            {% comment %}
+              The notification bell. `unread_notification_count` is put into
+              every template by complaints/context_processors.py, because this
+              sits on every page and no single view could supply it.
+
+              The count is only rendered when it is above zero — a badge
+              reading "0" is noise that trains people to ignore the badge.
+            {% endcomment %}
+            <li class="nav-item">
+              <a class="nav-link position-relative me-md-3"
+                 href="{% url 'notification_list' %}"
+                 aria-label="Notifications{% if unread_notification_count %} ({{ unread_notification_count }} unread){% endif %}">
+                Notifications
+                {% if unread_notification_count %}
+                  <span class="badge rounded-pill text-bg-danger ms-1">
+                    {{ unread_notification_count }}
+                  </span>
+                {% endif %}
+              </a>
+            </li>
+
             <li class="nav-item">
               <span class="navbar-text me-md-3">
                 {{ user.full_name }}

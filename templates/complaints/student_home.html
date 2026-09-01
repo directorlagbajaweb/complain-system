@@ -1,0 +1,113 @@
+{% extends 'base.html' %}
+{% load complaint_extras %}
+
+{% block title %}My complaints{% endblock %}
+
+{% block content %}
+
+  <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
+    <h1 class="h3 mb-0">My complaints</h1>
+    <a href="{% url 'complaint_create' %}" class="btn btn-primary">File a complaint</a>
+  </div>
+
+  {% comment %}
+    The status filter. Each button is a plain link with ?status=… on it, so the
+    filtered view has its own URL that can be bookmarked, shared or reloaded —
+    which a JavaScript filter would not give us.
+  {% endcomment %}
+  <div class="btn-group flex-wrap mb-4" role="group" aria-label="Filter by status">
+    {% for value, label, count in filters %}
+      <a href="{% if value %}?status={{ value }}{% else %}{% url 'student_home' %}{% endif %}"
+         class="btn btn-sm {% if selected_status == value %}btn-secondary{% else %}btn-outline-secondary{% endif %}">
+        {{ label }}
+        <span class="badge text-bg-light ms-1">{{ count }}</span>
+      </a>
+    {% endfor %}
+  </div>
+
+  {% if complaints %}
+
+    <div class="card shadow-sm">
+      <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0">
+          <thead class="table-light">
+            <tr>
+              <th scope="col">Reference</th>
+              <th scope="col">Subject</th>
+              <th scope="col">Category</th>
+              <th scope="col">Unit</th>
+              <th scope="col">Status</th>
+              <th scope="col">Filed</th>
+              <th scope="col">Handler</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for complaint in complaints %}
+              <tr>
+                <td class="text-nowrap">
+                  <a href="{% url 'complaint_detail' complaint.reference_no %}"
+                     class="fw-semibold text-decoration-none">
+                    {{ complaint.reference_no }}
+                  </a>
+                </td>
+                <td>
+                  <a href="{% url 'complaint_detail' complaint.reference_no %}"
+                     class="text-body text-decoration-none">
+                    {{ complaint.subject }}
+                  </a>
+                </td>
+                <td class="text-body-secondary">{{ complaint.category.name }}</td>
+                <td class="text-body-secondary">{{ complaint.unit.name }}</td>
+                <td>
+                  {% include 'partials/_status_badge.html' with status=complaint.status label=complaint.get_status_display %}
+                </td>
+                <td class="text-nowrap text-body-secondary">{{ complaint.created_at|date:"j M Y" }}</td>
+                <td class="text-body-secondary">
+                  {% if complaint.assigned_to %}
+                    {{ complaint.assigned_to.full_name }}
+                  {% else %}
+                    <span class="fst-italic">Unassigned</span>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  {% elif has_any_complaints %}
+
+    {% comment %}
+      The student has complaints, just none with the status they picked. This
+      is a different situation from having none at all, and telling them to
+      file a new complaint here would be the wrong advice.
+    {% endcomment %}
+    <div class="card shadow-sm">
+      <div class="card-body text-center py-5">
+        <p class="mb-2">Nothing here with that status.</p>
+        <a href="{% url 'student_home' %}" class="btn btn-outline-secondary btn-sm">
+          Show all my complaints
+        </a>
+      </div>
+    </div>
+
+  {% else %}
+
+    <div class="card shadow-sm">
+      <div class="card-body text-center py-5">
+        <h2 class="h5">You haven't filed any complaints yet</h2>
+        <p class="text-body-secondary mb-4">
+          If something on campus isn't working — a payment not showing, a hostel
+          repair, a result missing from the portal — tell us here and we'll
+          route it to the right office.
+        </p>
+        <a href="{% url 'complaint_create' %}" class="btn btn-primary">
+          File your first complaint
+        </a>
+      </div>
+    </div>
+
+  {% endif %}
+
+{% endblock content %}

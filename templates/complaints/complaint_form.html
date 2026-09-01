@@ -1,0 +1,56 @@
+{% extends 'base.html' %}
+
+{% block title %}File a complaint{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-8">
+
+    <nav aria-label="breadcrumb">
+      <ol class="breadcrumb small">
+        <li class="breadcrumb-item"><a href="{% url 'student_home' %}">My complaints</a></li>
+        <li class="breadcrumb-item active" aria-current="page">New</li>
+      </ol>
+    </nav>
+
+    <div class="card shadow-sm">
+      <div class="card-body p-4">
+
+        <h1 class="h4 mb-1">File a complaint</h1>
+        <p class="text-body-secondary small mb-4">
+          Pick what your complaint is about and we'll send it to the office
+          responsible. You'll get a reference number to quote in any follow-up.
+        </p>
+
+        {% comment %}
+          enctype is required for the file input to submit anything at all. Without
+          it the browser sends only the field names and the attachment is silently
+          dropped — no error, just no file.
+        {% endcomment %}
+        <form method="post" enctype="multipart/form-data" novalidate>
+          {% csrf_token %}
+
+          {% if form.non_field_errors %}
+            <div class="alert alert-danger py-2">
+              {% for error in form.non_field_errors %}<div>{{ error }}</div>{% endfor %}
+            </div>
+          {% endif %}
+
+          {% include 'partials/_field.html' with field=form.category %}
+          {% include 'partials/_field.html' with field=form.subject %}
+          {% include 'partials/_field.html' with field=form.description %}
+          {% include 'partials/_field.html' with field=form.priority %}
+          {% include 'partials/_field.html' with field=form.attachment %}
+
+          <div class="d-flex gap-2">
+            <button type="submit" class="btn btn-primary">Submit complaint</button>
+            <a href="{% url 'student_home' %}" class="btn btn-outline-secondary">Cancel</a>
+          </div>
+        </form>
+
+      </div>
+    </div>
+
+  </div>
+</div>
+{% endblock content %}
