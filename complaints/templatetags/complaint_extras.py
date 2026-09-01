@@ -56,3 +56,18 @@ def days_open(complaint):
     """
     end = complaint.resolved_at or timezone.now()
     return (end - complaint.created_at).days
+
+
+@register.filter
+def days_since(moment):
+    """
+    Whole days between a timestamp and now.
+
+    Used for "waiting 12 days" and "no change in 9 days" on the dashboard. It
+    takes a datetime rather than a complaint, because the two callers measure
+    from different columns — one from when the complaint was filed, the other
+    from its last status change.
+    """
+    if moment is None:
+        return 0
+    return (timezone.now() - moment).days

@@ -24,6 +24,11 @@ urlpatterns = [
     path('complaints/', views.student_home, name='student_home'),
     path('queue/', views.handler_queue, name='handler_queue'),
     path('dashboard/', views.admin_dashboard, name='admin_dashboard'),
+    path(
+        'dashboard/complaints/',
+        views.admin_complaint_list,
+        name='admin_complaint_list',
+    ),
 
     # The student's complaints.
     #

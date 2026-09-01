@@ -1,0 +1,290 @@
+{% extends 'base.html' %}
+{% load static complaint_extras %}
+
+{% block title %}Administrator dashboard{% endblock %}
+
+{% block content %}
+
+  <div class="d-flex flex-wrap justify-content-between align-items-center mb-4 gap-2">
+    <div>
+      <h1 class="h3 mb-0">Dashboard</h1>
+      <p class="text-body-secondary small mb-0">Across every unit.</p>
+    </div>
+    <a href="{% url 'admin_complaint_list' %}" class="btn btn-outline-secondary">
+      Browse all complaints
+    </a>
+  </div>
+
+  {# ---- Four headline numbers ---- #}
+  <div class="row g-3 mb-4">
+    <div class="col-6 col-lg-3">
+      <div class="card shadow-sm h-100">
+        <div class="card-body">
+          <div class="text-body-secondary small text-uppercase">Total complaints</div>
+          <div class="display-6">{{ stats.total }}</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-6 col-lg-3">
+      <div class="card shadow-sm h-100">
+        <div class="card-body">
+          <div class="text-body-secondary small text-uppercase">Still open</div>
+          <div class="display-6">{{ stats.open }}</div>
+          <div class="text-body-secondary small">Not resolved or closed</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-6 col-lg-3">
+      <div class="card shadow-sm h-100">
+        <div class="card-body">
+          <div class="text-body-secondary small text-uppercase">Avg days to resolve</div>
+          <div class="display-6">
+            {% if stats.average_days_to_resolve is None %}
+              <span class="text-body-secondary">—</span>
+            {% else %}
+              {{ stats.average_days_to_resolve }}
+            {% endif %}
+          </div>
+          <div class="text-body-secondary small">
+            {% if stats.average_days_to_resolve is None %}
+              Nothing resolved yet
+            {% else %}
+              Resolved complaints only
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="col-6 col-lg-3">
+      <div class="card shadow-sm h-100">
+        <div class="card-body">
+          <div class="text-body-secondary small text-uppercase">High priority open</div>
+          <div class="display-6 {% if stats.high_priority_open %}text-danger{% endif %}">
+            {{ stats.high_priority_open }}
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {# ---- Status breakdown strip ---- #}
+  <div class="card shadow-sm mb-4">
+    <div class="card-body">
+      <h2 class="h6 text-body-secondary text-uppercase mb-3">Status breakdown</h2>
+      <div class="row g-3 text-center">
+        {% for value, label, count in status_breakdown %}
+          <div class="col">
+            <div class="h4 mb-1">{{ count }}</div>
+            <span class="badge text-bg-{{ value|status_colour }}">{{ label }}</span>
+          </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+
+  {# ---- Charts ---- #}
+  <div class="row g-3 mb-4">
+    <div class="col-lg-5">
+      <div class="card shadow-sm h-100">
+        <div class="card-body">
+          <h2 class="h6 text-body-secondary text-uppercase mb-3">Complaints per unit</h2>
+          <canvas id="unitChart" height="240"></canvas>
+        </div>
+      </div>
+    </div>
+    <div class="col-lg-7">
+      <div class="card shadow-sm h-100">
+        <div class="card-body">
+          <h2 class="h6 text-body-secondary text-uppercase mb-3">
+            Filed against resolved, last 6 months
+          </h2>
+          <canvas id="monthChart" height="240"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {% comment %}
+    The chart data. `json_script` writes the dictionary the view built into a
+    <script type="application/json"> tag, safely escaped, where JavaScript can
+    read it back with one JSON.parse. Nothing about the charts is assembled in
+    this template — see the write-up for why that matters.
+  {% endcomment %}
+  {{ chart_data|json_script:"chart-data" }}
+
+  {# ---- Attention ---- #}
+  <h2 class="h4 mb-1">Attention</h2>
+  <p class="text-body-secondary small mb-3">
+    The complaints most likely to be going wrong quietly.
+  </p>
+
+  <div class="row g-3">
+
+    <div class="col-xl-4">
+      <div class="card shadow-sm h-100">
+        <div class="card-header bg-body-tertiary">
+          <span class="fw-semibold">Unassigned</span>
+          <span class="badge text-bg-warning ms-1">{{ unassigned|length }}</span>
+          <div class="text-body-secondary small">Submitted, nobody has picked it up</div>
+        </div>
+        {% if unassigned %}
+          <ul class="list-group list-group-flush">
+            {% for complaint in unassigned %}
+              <li class="list-group-item">
+                <a href="{% url 'queue_detail' complaint.reference_no %}"
+                   class="text-decoration-none fw-semibold">{{ complaint.reference_no }}</a>
+                <span class="badge text-bg-light">{{ complaint.unit.name }}</span>
+                <div class="small">{{ complaint.subject|truncatechars:60 }}</div>
+                <div class="text-body-secondary small">
+                  waiting {{ complaint.created_at|days_since }} day{{ complaint.created_at|days_since|pluralize }}
+                </div>
+              </li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <div class="card-body text-body-secondary small">
+            Everything submitted has been picked up.
+          </div>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="col-xl-4">
+      <div class="card shadow-sm h-100">
+        <div class="card-header bg-body-tertiary">
+          <span class="fw-semibold">Stale</span>
+          <span class="badge text-bg-warning ms-1">{{ stale|length }}</span>
+          <div class="text-body-secondary small">
+            No status change in over {{ stale_after_days }} days
+          </div>
+        </div>
+        {% if stale %}
+          <ul class="list-group list-group-flush">
+            {% for complaint in stale %}
+              <li class="list-group-item">
+                <a href="{% url 'queue_detail' complaint.reference_no %}"
+                   class="text-decoration-none fw-semibold">{{ complaint.reference_no }}</a>
+                {% include 'partials/_status_badge.html' with status=complaint.status label=complaint.get_status_display %}
+                <div class="small">{{ complaint.subject|truncatechars:60 }}</div>
+                <div class="text-body-secondary small">
+                  {% comment %}
+                    `last_change` is annotated onto each row by
+                    stats.stale_complaints() — the newest StatusHistory entry
+                    for that complaint, found in the database.
+                  {% endcomment %}
+                  no change in {{ complaint.last_change|days_since }} day{{ complaint.last_change|days_since|pluralize }}
+                  {% if complaint.assigned_to %}
+                    · {{ complaint.assigned_to.full_name }}
+                  {% endif %}
+                </div>
+              </li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <div class="card-body text-body-secondary small">
+            Nothing has been left sitting.
+          </div>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="col-xl-4">
+      <div class="card shadow-sm h-100">
+        <div class="card-header bg-body-tertiary">
+          <span class="fw-semibold">High priority open</span>
+          <span class="badge text-bg-danger ms-1">{{ high_priority|length }}</span>
+          <div class="text-body-secondary small">Marked urgent, not yet resolved</div>
+        </div>
+        {% if high_priority %}
+          <ul class="list-group list-group-flush">
+            {% for complaint in high_priority %}
+              <li class="list-group-item">
+                <a href="{% url 'queue_detail' complaint.reference_no %}"
+                   class="text-decoration-none fw-semibold">{{ complaint.reference_no }}</a>
+                {% include 'partials/_status_badge.html' with status=complaint.status label=complaint.get_status_display %}
+                <div class="small">{{ complaint.subject|truncatechars:60 }}</div>
+                <div class="text-body-secondary small">
+                  {{ complaint.unit.name }} · open {{ complaint|days_open }} day{{ complaint|days_open|pluralize }}
+                </div>
+              </li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <div class="card-body text-body-secondary small">
+            No high priority complaints are outstanding.
+          </div>
+        {% endif %}
+      </div>
+    </div>
+
+  </div>
+
+{% endblock content %}
+
+{% block scripts %}
+  {# Chart.js from static/vendor/ — the same vendored copy as Bootstrap. #}
+  <script src="{% static 'vendor/chartjs/chart.umd.min.js' %}"></script>
+  <script>
+    (function () {
+      // One parse of the JSON the view rendered above. From here on this is
+      // ordinary data — no template tags inside the JavaScript.
+      const data = JSON.parse(document.getElementById('chart-data').textContent);
+
+      const grid = 'rgba(128, 128, 128, 0.2)';
+      const common = {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          y: {
+            beginAtZero: true,
+            // Complaints are whole things; half a complaint is not a reading.
+            ticks: { precision: 0 },
+            grid: { color: grid }
+          },
+          x: { grid: { display: false } }
+        }
+      };
+
+      new Chart(document.getElementById('unitChart'), {
+        type: 'bar',
+        data: {
+          labels: data.per_unit.labels,
+          datasets: [{
+            label: 'Complaints',
+            data: data.per_unit.values,
+            backgroundColor: '#0d6efd'
+          }]
+        },
+        options: Object.assign({}, common, {
+          plugins: { legend: { display: false } }
+        })
+      });
+
+      new Chart(document.getElementById('monthChart'), {
+        type: 'line',
+        data: {
+          labels: data.by_month.labels,
+          datasets: [
+            {
+              label: 'Filed',
+              data: data.by_month.filed,
+              borderColor: '#0d6efd',
+              backgroundColor: '#0d6efd',
+              tension: 0.3
+            },
+            {
+              label: 'Resolved',
+              data: data.by_month.resolved,
+              borderColor: '#198754',
+              backgroundColor: '#198754',
+              tension: 0.3
+            }
+          ]
+        },
+        options: Object.assign({}, common, {
+          plugins: { legend: { position: 'bottom' } }
+        })
+      });
+    })();
+  </script>
+{% endblock scripts %}

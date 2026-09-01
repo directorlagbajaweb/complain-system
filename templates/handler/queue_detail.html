@@ -157,6 +157,46 @@
 
         </div>
 
+        {% comment %}
+          Administrators only. A handler can claim a complaint but cannot hand
+          it to a colleague, so this block is absent from their page entirely —
+          and the view refuses the 'reassign' action for anyone who is not an
+          administrator, so hiding it here is presentation, not the control.
+
+          The list holds only handlers from this complaint's own unit.
+        {% endcomment %}
+        {% if assignable_handlers %}
+          <hr>
+          <h3 class="h6 text-body-secondary text-uppercase">Reassign</h3>
+          <form method="post" class="row g-2 align-items-end">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="reassign">
+            <div class="col-sm-7">
+              <label for="handler" class="form-label small text-body-secondary">
+                Handler in {{ complaint.unit.name }}
+              </label>
+              <select class="form-select" id="handler" name="handler">
+                {% for handler in assignable_handlers %}
+                  <option value="{{ handler.pk }}"
+                          {% if handler.pk == complaint.assigned_to_id %}selected{% endif %}>
+                    {{ handler.full_name }}
+                    {% if handler.pk == complaint.assigned_to_id %}(current){% endif %}
+                  </option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-sm-5">
+              <button type="submit" class="btn btn-outline-primary">Reassign</button>
+            </div>
+          </form>
+        {% elif user.is_admin_role %}
+          <hr>
+          <p class="text-body-secondary small mb-0">
+            {{ complaint.unit.name }} has no handlers yet, so there is nobody to
+            assign this to. Add one in the Django admin.
+          </p>
+        {% endif %}
+
       </div>
     </div>
 

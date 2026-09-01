@@ -983,3 +983,411 @@ class HandlerMessageTests(HandlerTestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(Message.objects.filter(complaint=self.ict_complaint).count(), 0)
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: the admin dashboard
+# ---------------------------------------------------------------------------
+
+ADMIN_COMPLAINTS = '/dashboard/complaints/'
+
+
+class DashboardTestCase(TestCase):
+    """Two units with handlers, and a spread of complaints to count."""
+
+    @classmethod
+    def setUpTestData(cls):
+        from datetime import timedelta
+
+        from django.utils import timezone
+        from .models import Category, Complaint
+
+        cls.dept = AcademicDepartment.objects.create(name="Computer Science")
+        cls.ict = Unit.objects.create(name="ICT")
+        cls.bursary = Unit.objects.create(name="Bursary")
+        cls.empty_unit = Unit.objects.create(name="Works & Maintenance")
+        cls.ict_category = Category.objects.create(name="Portal access", unit=cls.ict)
+        cls.bursary_category = Category.objects.create(name="Fees", unit=cls.bursary)
+
+        cls.student = User.objects.create_user(
+            email='ada@school.edu', password=PASSWORD, full_name="Ada Student",
+            matric_no='CSC/2023/001', academic_department=cls.dept,
+        )
+        cls.ict_handler = User.objects.create_user(
+            email='ict@school.edu', password=PASSWORD, full_name="Ife Handler",
+            role=User.Role.HANDLER, unit=cls.ict,
+        )
+        cls.ict_handler2 = User.objects.create_user(
+            email='ict2@school.edu', password=PASSWORD, full_name="Ola Handler",
+            role=User.Role.HANDLER, unit=cls.ict,
+        )
+        cls.bursary_handler = User.objects.create_user(
+            email='bursary@school.edu', password=PASSWORD, full_name="Bisi Handler",
+            role=User.Role.HANDLER, unit=cls.bursary,
+        )
+        cls.admin = User.objects.create_user(
+            email='admin@school.edu', password=PASSWORD, full_name="Chidi Admin",
+            role=User.Role.ADMIN,
+        )
+
+        now = timezone.now()
+
+        # Unassigned and waiting.
+        cls.unassigned = Complaint.objects.create(
+            student=cls.student, category=cls.ict_category,
+            subject="Portal locked", description="x",
+        )
+        Complaint.objects.filter(pk=cls.unassigned.pk).update(
+            created_at=now - timedelta(days=12)
+        )
+
+        # Assigned, but untouched for a long time -> stale.
+        cls.stale = Complaint.objects.create(
+            student=cls.student, category=cls.ict_category,
+            subject="Wi-Fi down in Block C", description="x",
+            assigned_to=cls.ict_handler, status=Complaint.Status.IN_PROGRESS,
+        )
+        Complaint.objects.filter(pk=cls.stale.pk).update(
+            created_at=now - timedelta(days=20)
+        )
+        cls.stale.status_history.update(changed_at=now - timedelta(days=15))
+
+        # Assigned and touched this morning -> in hand, not stale.
+        cls.fresh = Complaint.objects.create(
+            student=cls.student, category=cls.ict_category,
+            subject="Email quota", description="x",
+            assigned_to=cls.ict_handler, status=Complaint.Status.ASSIGNED,
+        )
+        Complaint.objects.filter(pk=cls.fresh.pk).update(
+            created_at=now - timedelta(days=90)
+        )
+
+        # High priority, open.
+        cls.urgent = Complaint.objects.create(
+            student=cls.student, category=cls.bursary_category,
+            subject="Fees paid but portal says unpaid",
+            description="x", priority=Complaint.Priority.HIGH,
+            assigned_to=cls.bursary_handler, status=Complaint.Status.ASSIGNED,
+        )
+
+        # Resolved four days after filing.
+        cls.resolved = Complaint.objects.create(
+            student=cls.student, category=cls.bursary_category,
+            subject="Refund", description="x",
+        )
+        Complaint.objects.filter(pk=cls.resolved.pk).update(
+            created_at=now - timedelta(days=4),
+            resolved_at=now,
+            status=Complaint.Status.RESOLVED,
+        )
+
+
+class DashboardAccessTests(DashboardTestCase):
+
+    def test_only_admins_reach_the_dashboard(self):
+        for url in (ADMIN_DASHBOARD, ADMIN_COMPLAINTS):
+            with self.subTest(url=url):
+                self.client.force_login(self.student)
+                self.assertRedirects(self.client.get(url), STUDENT_HOME)
+
+                self.client.force_login(self.ict_handler)
+                self.assertRedirects(self.client.get(url), HANDLER_QUEUE)
+
+                self.client.logout()
+                self.assertRedirects(
+                    self.client.get(url), f"{reverse('login')}?next={url}"
+                )
+
+                self.client.force_login(self.admin)
+                self.assertEqual(self.client.get(url).status_code, 200)
+
+
+class StatTileTests(DashboardTestCase):
+
+    def test_headline_numbers(self):
+        from . import stats
+
+        result = stats.headline_stats()
+        self.assertEqual(result['total'], 5)
+        # Everything except the resolved one.
+        self.assertEqual(result['open'], 4)
+        self.assertEqual(result['high_priority_open'], 1)
+        self.assertEqual(result['average_days_to_resolve'], 4.0)
+
+    def test_average_ignores_unresolved_complaints(self):
+        """Otherwise more outstanding work would make the average look better."""
+        from . import stats
+        from .models import Complaint
+
+        Complaint.objects.create(
+            student=self.student, category=self.ict_category,
+            subject="Brand new", description="x",
+        )
+        self.assertEqual(stats.average_days_to_resolve(), 4.0)
+
+    def test_average_is_none_when_nothing_is_resolved(self):
+        from . import stats
+        from .models import Complaint
+
+        Complaint.objects.update(resolved_at=None)
+        self.assertIsNone(stats.average_days_to_resolve())
+
+    def test_high_priority_tile_excludes_resolved(self):
+        from . import stats
+        from .models import Complaint
+
+        self.urgent.status = Complaint.Status.RESOLVED
+        self.urgent.save()
+        self.assertEqual(stats.headline_stats()['high_priority_open'], 0)
+
+    def test_status_breakdown_includes_zeroes(self):
+        from . import stats
+        from .models import Complaint
+
+        breakdown = dict((value, count) for value, _, count in stats.status_breakdown())
+        self.assertEqual(len(breakdown), len(Complaint.Status.choices))
+        self.assertEqual(breakdown[Complaint.Status.CLOSED], 0)
+        self.assertEqual(breakdown[Complaint.Status.SUBMITTED], 1)
+        self.assertEqual(breakdown[Complaint.Status.ASSIGNED], 2)
+        self.assertEqual(breakdown[Complaint.Status.IN_PROGRESS], 1)
+        self.assertEqual(breakdown[Complaint.Status.RESOLVED], 1)
+
+
+class StaleCalculationTests(DashboardTestCase):
+
+    def test_stale_uses_last_status_change_not_created_at(self):
+        from . import stats
+
+        stale = list(stats.stale_complaints())
+
+        # Untouched for 15 days -> stale.
+        self.assertIn(self.stale, stale)
+        # Filed 90 days ago but its history row is from today -> not stale.
+        self.assertNotIn(self.fresh, stale)
+        # Unassigned complaints belong on their own list, not this one.
+        self.assertNotIn(self.unassigned, stale)
+        # Resolved work is finished, not stale.
+        self.assertNotIn(self.resolved, stale)
+
+    def test_touching_a_complaint_clears_it_from_stale(self):
+        from . import stats
+        from .models import Complaint
+
+        self.assertIn(self.stale, stats.stale_complaints())
+
+        self.client.force_login(self.ict_handler)
+        self.client.post(f"/queue/{self.stale.reference_no}/", {
+            'action': 'status', 'status': Complaint.Status.RESOLVED,
+        })
+
+        self.assertNotIn(self.stale, stats.stale_complaints())
+
+    def test_last_change_is_annotated_for_the_template(self):
+        from . import stats
+
+        row = stats.stale_complaints().get(pk=self.stale.pk)
+        newest = self.stale.status_history.order_by('-changed_at').first()
+        self.assertEqual(row.last_change, newest.changed_at)
+
+
+class AttentionListTests(DashboardTestCase):
+
+    def test_unassigned_list(self):
+        from . import stats
+
+        self.assertEqual(list(stats.unassigned_complaints()), [self.unassigned])
+
+    def test_high_priority_open_list(self):
+        from . import stats
+
+        self.assertEqual(list(stats.high_priority_open()), [self.urgent])
+
+    def test_attention_rows_link_to_the_queue_detail_page(self):
+        self.client.force_login(self.admin)
+        response = self.client.get(ADMIN_DASHBOARD)
+        self.assertContains(response, f"/queue/{self.unassigned.reference_no}/")
+        self.assertContains(response, f"/queue/{self.stale.reference_no}/")
+        self.assertContains(response, f"/queue/{self.urgent.reference_no}/")
+
+
+class ChartDataTests(DashboardTestCase):
+
+    def test_per_unit_counts_include_units_with_none(self):
+        from . import stats
+
+        data = stats.complaints_per_unit()
+        counts = dict(zip(data['labels'], data['values']))
+        self.assertEqual(counts['ICT'], 3)
+        self.assertEqual(counts['Bursary'], 2)
+        self.assertEqual(counts['Works & Maintenance'], 0)
+
+    def test_by_month_returns_six_labelled_buckets(self):
+        from . import stats
+
+        data = stats.filed_vs_resolved_by_month(months=6)
+        self.assertEqual(len(data['labels']), 6)
+        self.assertEqual(len(data['filed']), 6)
+        self.assertEqual(len(data['resolved']), 6)
+        # This month: four filed recently, one resolved.
+        self.assertEqual(data['resolved'][-1], 1)
+
+    def test_chart_data_reaches_the_page_as_json(self):
+        import json
+
+        self.client.force_login(self.admin)
+        response = self.client.get(ADMIN_DASHBOARD)
+
+        self.assertContains(response, 'id="chart-data"')
+        html = response.content.decode()
+        start = html.index('id="chart-data"')
+        payload = html[html.index('>', start) + 1:html.index('</script>', start)]
+        data = json.loads(payload)
+
+        self.assertIn('per_unit', data)
+        self.assertIn('by_month', data)
+        self.assertEqual(len(data['by_month']['labels']), 6)
+
+    def test_chart_js_is_loaded_from_static_not_a_cdn(self):
+        self.client.force_login(self.admin)
+        response = self.client.get(ADMIN_DASHBOARD)
+        self.assertContains(response, 'vendor/chartjs/chart.umd.min.js')
+        self.assertNotContains(response, 'cdn.jsdelivr.net')
+
+
+class AdminComplaintListTests(DashboardTestCase):
+
+    def test_lists_every_unit(self):
+        self.client.force_login(self.admin)
+        response = self.client.get(ADMIN_COMPLAINTS)
+        self.assertEqual(len(response.context['complaints']), 5)
+
+    def test_filters_combine(self):
+        from .models import Complaint
+
+        self.client.force_login(self.admin)
+        response = self.client.get(ADMIN_COMPLAINTS, {
+            'unit': self.bursary.pk,
+            'priority': Complaint.Priority.HIGH,
+        })
+        self.assertEqual(list(response.context['complaints']), [self.urgent])
+
+    def test_search_matches_reference_subject_or_student(self):
+        self.client.force_login(self.admin)
+
+        for term in (self.urgent.reference_no, "portal says unpaid", "Ada"):
+            with self.subTest(term=term):
+                response = self.client.get(ADMIN_COMPLAINTS, {'q': term})
+                self.assertIn(self.urgent, list(response.context['complaints']))
+
+    def test_search_with_no_match_is_empty_not_everything(self):
+        self.client.force_login(self.admin)
+        response = self.client.get(ADMIN_COMPLAINTS, {'q': 'zzzz-no-such-thing'})
+        self.assertEqual(list(response.context['complaints']), [])
+
+    def test_unknown_filter_values_narrow_nothing(self):
+        self.client.force_login(self.admin)
+        response = self.client.get(ADMIN_COMPLAINTS, {
+            'status': 'nonsense', 'unit': '9999', 'priority': 'urgent',
+        })
+        self.assertEqual(len(response.context['complaints']), 5)
+
+
+class ReassignmentTests(DashboardTestCase):
+
+    def queue_url(self, complaint):
+        return f"/queue/{complaint.reference_no}/"
+
+    def test_admin_reassigns_and_notifies_both_sides(self):
+        from .models import Notification
+
+        self.client.force_login(self.admin)
+        response = self.client.post(self.queue_url(self.stale), {
+            'action': 'reassign', 'handler': self.ict_handler2.pk,
+        })
+        self.assertRedirects(response, self.queue_url(self.stale))
+
+        self.stale.refresh_from_db()
+        self.assertEqual(self.stale.assigned_to, self.ict_handler2)
+
+        student_note = Notification.objects.get(complaint=self.stale, user=self.student)
+        self.assertIn("Ola Handler", student_note.body)
+
+        handler_note = Notification.objects.get(
+            complaint=self.stale, user=self.ict_handler2
+        )
+        self.assertIn("Chidi Admin", handler_note.body)
+
+    def test_reassignment_is_recorded_in_status_history(self):
+        from .models import StatusHistory
+
+        before = StatusHistory.objects.filter(complaint=self.stale).count()
+        self.client.force_login(self.admin)
+        self.client.post(self.queue_url(self.stale), {
+            'action': 'reassign', 'handler': self.ict_handler2.pk,
+        })
+        entries = StatusHistory.objects.filter(complaint=self.stale)
+        self.assertEqual(entries.count(), before + 1)
+        self.assertEqual(entries.last().changed_by, self.admin)
+
+    def test_reassigning_a_submitted_complaint_also_marks_it_assigned(self):
+        from .models import Complaint, StatusHistory
+
+        self.client.force_login(self.admin)
+        self.client.post(self.queue_url(self.unassigned), {
+            'action': 'reassign', 'handler': self.ict_handler.pk,
+        })
+        self.unassigned.refresh_from_db()
+        self.assertEqual(self.unassigned.status, Complaint.Status.ASSIGNED)
+        self.assertEqual(self.unassigned.assigned_to, self.ict_handler)
+
+        entry = StatusHistory.objects.filter(complaint=self.unassigned).last()
+        self.assertEqual(entry.old_status, Complaint.Status.SUBMITTED)
+        self.assertEqual(entry.new_status, Complaint.Status.ASSIGNED)
+
+    def test_reassigning_in_progress_does_not_reset_the_status(self):
+        from .models import Complaint
+
+        self.client.force_login(self.admin)
+        self.client.post(self.queue_url(self.stale), {
+            'action': 'reassign', 'handler': self.ict_handler2.pk,
+        })
+        self.stale.refresh_from_db()
+        self.assertEqual(self.stale.status, Complaint.Status.IN_PROGRESS)
+
+    def test_cannot_reassign_to_a_handler_in_another_unit(self):
+        self.client.force_login(self.admin)
+        self.client.post(self.queue_url(self.stale), {
+            'action': 'reassign', 'handler': self.bursary_handler.pk,
+        })
+        self.stale.refresh_from_db()
+        self.assertEqual(self.stale.assigned_to, self.ict_handler)
+
+    def test_cannot_reassign_to_a_student_or_an_admin(self):
+        self.client.force_login(self.admin)
+        for target in (self.student, self.admin):
+            with self.subTest(role=target.role):
+                self.client.post(self.queue_url(self.stale), {
+                    'action': 'reassign', 'handler': target.pk,
+                })
+                self.stale.refresh_from_db()
+                self.assertEqual(self.stale.assigned_to, self.ict_handler)
+
+    def test_handler_cannot_reassign(self):
+        """The dropdown is absent from their page, and the action is refused."""
+        self.client.force_login(self.ict_handler)
+
+        page = self.client.get(self.queue_url(self.stale))
+        self.assertIsNone(page.context['assignable_handlers'])
+        self.assertNotContains(page, 'value="reassign"')
+
+        self.client.post(self.queue_url(self.stale), {
+            'action': 'reassign', 'handler': self.ict_handler2.pk,
+        })
+        self.stale.refresh_from_db()
+        self.assertEqual(self.stale.assigned_to, self.ict_handler)
+
+    def test_admin_sees_only_this_units_handlers_in_the_dropdown(self):
+        self.client.force_login(self.admin)
+        page = self.client.get(self.queue_url(self.stale))
+        offered = list(page.context['assignable_handlers'])
+        self.assertEqual(offered, [self.ict_handler, self.ict_handler2])

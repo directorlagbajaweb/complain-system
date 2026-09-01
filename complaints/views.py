@@ -7,7 +7,7 @@ from django.contrib import messages
 from django.contrib.auth import login, logout
 from django.contrib.auth.decorators import login_required
 from django.db import transaction
-from django.db.models import Case, Count, IntegerField, Value, When
+from django.db.models import Case, Count, IntegerField, Q, Value, When
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.http import require_POST
@@ -20,7 +20,8 @@ from .forms import (
     MessageForm,
     StudentSignupForm,
 )
-from .models import Attachment, Complaint, Notification, User
+from . import stats
+from .models import Attachment, Complaint, Notification, StatusHistory, Unit, User
 from .notifications import notify
 
 
@@ -481,6 +482,11 @@ def queue_detail(request, reference_no):
             form = _handle_status_change(request, complaint)
         elif action == 'message':
             form = _handle_handler_message(request, complaint)
+        elif action == 'reassign' and request.user.is_admin_role:
+            # Guarded by the role here, not only by hiding the dropdown in the
+            # template. A handler posting this action falls through to the
+            # error below, exactly as if they had invented the name.
+            form = _handle_reassign(request, complaint)
         else:
             messages.error(request, "Unrecognised action.")
 
@@ -503,6 +509,13 @@ def queue_detail(request, reference_no):
     if complaint.resolved_at:
         days_to_resolve = (complaint.resolved_at - complaint.created_at).days
 
+    # Only administrators may hand a complaint to someone else, and only to a
+    # handler in the unit that owns it — sending an ICT problem to the Bursary
+    # would put it in front of somebody with no way to fix it.
+    assignable_handlers = None
+    if request.user.is_admin_role:
+        assignable_handlers = _assignable_handlers(complaint)
+
     return render(request, 'handler/queue_detail.html', {
         'complaint': complaint,
         'thread': thread,
@@ -511,7 +524,99 @@ def queue_detail(request, reference_no):
         'form': form,
         'status_actions': STATUS_ACTIONS,
         'days_to_resolve': days_to_resolve,
+        'assignable_handlers': assignable_handlers,
     })
+
+
+def _assignable_handlers(complaint):
+    """Active handlers in the unit responsible for this complaint."""
+    return User.objects.filter(
+        role=User.Role.HANDLER,
+        unit=complaint.category.unit,
+        is_active=True,
+    ).order_by('full_name')
+
+
+def _handle_reassign(request, complaint):
+    """
+    Administrator reassignment. Returns None on success.
+
+    The chosen handler is looked up inside `_assignable_handlers()` rather than
+    fetched by id from the whole user table. That single decision enforces
+    three rules at once: the target must exist, must be a handler, and must
+    belong to this complaint's unit. A posted id that fails any of them finds
+    nothing and is rejected — there is no separate validation to keep in step.
+    """
+    handler = _assignable_handlers(complaint).filter(
+        pk=request.POST.get('handler') or 0
+    ).first()
+
+    if handler is None:
+        messages.error(
+            request,
+            "Pick a handler from this complaint's unit.",
+        )
+        return None
+
+    if handler == complaint.assigned_to:
+        messages.info(
+            request, f"{complaint.reference_no} is already with {handler.full_name}."
+        )
+        return None
+
+    previous = complaint.assigned_to
+
+    with transaction.atomic():
+        complaint.assigned_to = handler
+        complaint._changed_by = request.user
+
+        if complaint.status == Complaint.Status.SUBMITTED:
+            # Nobody had it before, so this is also the moment it becomes
+            # assigned. Complaint.save() sees the status change and writes the
+            # history row itself.
+            complaint.status = Complaint.Status.ASSIGNED
+            complaint.save()
+        else:
+            # The status is not changing — the complaint is only moving between
+            # people — so save() will not write anything, and the reassignment
+            # would leave no trace. StatusHistory is the only audit table this
+            # system has, so the row is written here by hand with the same
+            # status on both sides: "touched at this time, by this person, not
+            # moved". Reading the timeline, it shows up as a dated entry rather
+            # than as a status change.
+            complaint.save()
+            StatusHistory.objects.create(
+                complaint=complaint,
+                changed_by=request.user,
+                old_status=complaint.status,
+                new_status=complaint.status,
+            )
+
+        # Both sides are told, because both have something to do about it.
+        notify(
+            complaint.student,
+            complaint,
+            f"{complaint.reference_no} is now being handled by "
+            f"{handler.full_name} in {complaint.unit.name}.",
+        )
+        notify(
+            handler,
+            complaint,
+            f"{request.user.full_name} assigned {complaint.reference_no} "
+            f"to you: {complaint.subject}",
+        )
+
+    if previous:
+        messages.success(
+            request,
+            f"{complaint.reference_no} moved from {previous.full_name} "
+            f"to {handler.full_name}.",
+        )
+    else:
+        messages.success(
+            request, f"{complaint.reference_no} assigned to {handler.full_name}."
+        )
+    return None
 
 
 def _handle_assign(request, complaint):
@@ -619,7 +724,91 @@ def _handle_handler_message(request, complaint):
     return None
 
 
+# ---------------------------------------------------------------------------
+# The admin dashboard
+# ---------------------------------------------------------------------------
+
+
 @role_required(User.Role.ADMIN)
 def admin_dashboard(request):
-    """/dashboard/ — where an administrator will see reports across all units."""
-    return render(request, 'dashboards/admin_dashboard.html')
+    """
+    /dashboard/ — the overview across every unit.
+
+    This view does no counting of its own. Each number comes from a named
+    function in complaints/stats.py that computes it in the database; the view's
+    job is to gather them and hand them to the template.
+    """
+    return render(request, 'admin/dashboard.html', {
+        'stats': stats.headline_stats(),
+        'status_breakdown': stats.status_breakdown(),
+
+        # Both charts' data travels as one dictionary, rendered into the page
+        # by `json_script` and read back by Chart.js. See the write-up.
+        'chart_data': {
+            'per_unit': stats.complaints_per_unit(),
+            'by_month': stats.filed_vs_resolved_by_month(months=6),
+        },
+
+        'unassigned': stats.unassigned_complaints(),
+        'stale': stats.stale_complaints(),
+        'high_priority': stats.high_priority_open(),
+        'stale_after_days': stats.STALE_AFTER_DAYS,
+    })
+
+
+@role_required(User.Role.ADMIN)
+def admin_complaint_list(request):
+    """
+    /dashboard/complaints/ — every complaint in the system, with filters and a
+    search box.
+
+    Each filter is applied only when it was actually supplied and recognised,
+    so an unknown value narrows nothing rather than silently emptying the list.
+    """
+    complaints = Complaint.objects.select_related(
+        'student', 'category', 'category__unit', 'assigned_to'
+    )
+
+    selected_status = request.GET.get('status') or ''
+    if selected_status in Complaint.Status.values:
+        complaints = complaints.filter(status=selected_status)
+    else:
+        selected_status = ''
+
+    selected_priority = request.GET.get('priority') or ''
+    if selected_priority in Complaint.Priority.values:
+        complaints = complaints.filter(priority=selected_priority)
+    else:
+        selected_priority = ''
+
+    selected_unit = request.GET.get('unit') or ''
+    if selected_unit.isdigit() and Unit.objects.filter(pk=selected_unit).exists():
+        complaints = complaints.filter(category__unit_id=selected_unit)
+    else:
+        selected_unit = ''
+
+    # One box, three columns. `Q(...) | Q(...)` is an OR in SQL, so a typed
+    # reference matches the reference column while a typed name matches the
+    # student — the searcher does not have to say which kind of thing they
+    # are typing.
+    query = (request.GET.get('q') or '').strip()
+    if query:
+        complaints = complaints.filter(
+            Q(reference_no__icontains=query)
+            | Q(subject__icontains=query)
+            | Q(student__full_name__icontains=query)
+        )
+
+    return render(request, 'admin/complaint_list.html', {
+        'complaints': complaints,
+        'units': Unit.objects.all(),
+        'statuses': Complaint.Status.choices,
+        'priorities': Complaint.Priority.choices,
+        'selected_status': selected_status,
+        'selected_priority': selected_priority,
+        'selected_unit': selected_unit,
+        'query': query,
+        'is_filtered': bool(
+            selected_status or selected_priority or selected_unit or query
+        ),
+    })
