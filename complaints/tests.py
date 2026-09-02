@@ -1391,3 +1391,213 @@ class ReassignmentTests(DashboardTestCase):
         page = self.client.get(self.queue_url(self.stale))
         offered = list(page.context['assignable_handlers'])
         self.assertEqual(offered, [self.ict_handler, self.ict_handler2])
+
+
+# ---------------------------------------------------------------------------
+# Regression: creating staff in the Django admin
+# ---------------------------------------------------------------------------
+
+
+class AdminUserCreationTests(TestCase):
+    """
+    `User.clean()` enforces which fields go with which role, and a ModelForm
+    can only report an error against a field it actually has. When the add-user
+    form was missing `unit`, creating a handler crashed with
+
+        ValueError: 'UserForm' has no field named 'unit'
+
+    instead of showing "A handler must belong to a unit". The fix was to put
+    the role-specific fields on the add form; these tests hold that in place.
+    """
+
+    ADD_URL = '/admin/complaints/user/add/'
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.unit = Unit.objects.create(name="ICT")
+        cls.department = AcademicDepartment.objects.create(name="Computer Science")
+        cls.superuser = User.objects.create_superuser(
+            email='root@school.edu', password=PASSWORD, full_name="Root Admin",
+        )
+
+    def setUp(self):
+        self.client.force_login(self.superuser)
+
+    def add(self, **overrides):
+        """POST the add-user form with everything blank except what is given."""
+        data = {
+            'email': 'someone@school.edu',
+            'full_name': "Someone",
+            'role': User.Role.STUDENT,
+            'matric_no': '',
+            'academic_department': '',
+            'unit': '',
+            'password1': PASSWORD,
+            'password2': PASSWORD,
+        }
+        data.update(overrides)
+        return self.client.post(self.ADD_URL, data)
+
+    def form_errors(self, response):
+        return dict(response.context['adminform'].form.errors)
+
+    # -- The reported crash ------------------------------------------------
+
+    def test_creating_a_handler_without_a_unit_shows_an_error_not_a_crash(self):
+        response = self.add(
+            email='handler@school.edu', full_name="Ife Handler",
+            role=User.Role.HANDLER,
+        )
+        # A re-rendered form, not a 302 and not an exception.
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            self.form_errors(response),
+            {'unit': ["A handler must belong to a unit."]},
+        )
+        self.assertFalse(User.objects.filter(email='handler@school.edu').exists())
+
+    def test_creating_a_handler_with_a_unit_succeeds(self):
+        response = self.add(
+            email='handler@school.edu', full_name="Ife Handler",
+            role=User.Role.HANDLER, unit=self.unit.pk,
+        )
+        self.assertEqual(response.status_code, 302)
+
+        handler = User.objects.get(email='handler@school.edu')
+        self.assertEqual(handler.role, User.Role.HANDLER)
+        self.assertEqual(handler.unit, self.unit)
+        self.assertIsNone(handler.matric_no)
+        # And the account is actually usable.
+        self.assertTrue(handler.check_password(PASSWORD))
+
+    # -- The student case asked about --------------------------------------
+
+    def test_creating_a_student_without_an_academic_department_succeeds(self):
+        """
+        The same crash cannot happen here: `User.clean()` never requires a
+        department. The column is optional on the model, and it is the *signup
+        form* — not the model — that insists on one for self-registration. So
+        an administrator may create a student and fill the department in later.
+        """
+        response = self.add(
+            email='student@school.edu', full_name="Ada Student",
+            role=User.Role.STUDENT,
+        )
+        self.assertEqual(response.status_code, 302)
+
+        student = User.objects.get(email='student@school.edu')
+        self.assertEqual(student.role, User.Role.STUDENT)
+        self.assertIsNone(student.academic_department)
+        self.assertIsNone(student.matric_no)
+
+    def test_creating_a_student_with_a_unit_shows_an_error_not_a_crash(self):
+        """The other direction of the same rule, and the other way `unit`
+        can be flagged."""
+        response = self.add(
+            email='student@school.edu', full_name="Ada Student",
+            role=User.Role.STUDENT, unit=self.unit.pk,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            self.form_errors(response),
+            {'unit': ["Students do not belong to a unit."]},
+        )
+
+    # -- The remaining pairings clean() can flag ---------------------------
+
+    def test_staff_with_student_only_fields_show_errors_not_crashes(self):
+        cases = [
+            (
+                "admin with a matric number",
+                {'role': User.Role.ADMIN, 'matric_no': 'ADM/1'},
+                {'matric_no': ["Only students have a matriculation number."]},
+            ),
+            (
+                "admin with a department",
+                {'role': User.Role.ADMIN, 'academic_department': self.department.pk},
+                {'academic_department': ["Only students have an academic department."]},
+            ),
+            (
+                "handler with a matric number",
+                {
+                    'role': User.Role.HANDLER,
+                    'unit': self.unit.pk,
+                    'matric_no': 'HND/1',
+                },
+                {'matric_no': ["Only students have a matriculation number."]},
+            ),
+            (
+                "handler with a department",
+                {
+                    'role': User.Role.HANDLER,
+                    'unit': self.unit.pk,
+                    'academic_department': self.department.pk,
+                },
+                {'academic_department': ["Only students have an academic department."]},
+            ),
+        ]
+        for name, payload, expected in cases:
+            with self.subTest(case=name):
+                response = self.add(
+                    email=f"{name.replace(' ', '-')}@school.edu",
+                    full_name="Test Person",
+                    **payload,
+                )
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(self.form_errors(response), expected)
+
+    # -- The invariant that stops this coming back -------------------------
+
+    def test_every_field_user_clean_can_flag_is_on_the_add_form(self):
+        """
+        The general rule behind the fix, rather than one more example of it.
+
+        `User.clean()` is asked to validate every invalid role/field pairing it
+        knows about, and the field names it complains about are collected. Each
+        one has to exist on the add-user form — otherwise Django cannot attach
+        the error and raises ValueError instead.
+
+        Written this way, adding a new rule to `clean()` and forgetting to add
+        its field to `add_fieldsets` fails here, naming the missing field,
+        rather than crashing an administrator on a Tuesday.
+        """
+        from django.core.exceptions import ValidationError
+
+        invalid_users = [
+            User(role=User.Role.HANDLER),                        # no unit
+            User(role=User.Role.HANDLER, unit=self.unit,
+                 matric_no='X/1', academic_department=self.department),
+            User(role=User.Role.STUDENT, unit=self.unit),
+            User(role=User.Role.ADMIN, matric_no='X/2',
+                 academic_department=self.department),
+        ]
+
+        flagged = set()
+        for user in invalid_users:
+            try:
+                user.clean()
+            except ValidationError as error:
+                flagged.update(error.error_dict)
+
+        # Sanity: clean() really did object to something, so an empty set
+        # cannot make this test pass by accident.
+        self.assertEqual(flagged, {'unit', 'matric_no', 'academic_department'})
+
+        form_fields = set(self.client.get(self.ADD_URL).context['adminform'].form.fields)
+        missing = flagged - form_fields
+        self.assertEqual(
+            missing, set(),
+            f"User.clean() can flag {sorted(missing)}, which the add-user form "
+            f"has no field for — creating such a user will raise ValueError.",
+        )
+
+    def test_add_form_shows_the_expected_fields(self):
+        response = self.client.get(self.ADD_URL)
+        fields = list(response.context['adminform'].form.fields)
+        for expected in [
+            'email', 'full_name', 'role',
+            'matric_no', 'academic_department', 'unit',
+            'password1', 'password2',
+        ]:
+            with self.subTest(field=expected):
+                self.assertIn(expected, fields)

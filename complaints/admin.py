@@ -113,13 +113,59 @@ class UserAdmin(BaseUserAdmin):
         ("Dates", {"fields": ["last_login", "date_joined"], "classes": ["collapse"]}),
     ]
 
-    # The "add user" screen: only what is needed to create the account.
+    # The "add user" screen.
+    #
+    # This carries the role-specific fields — matric_no, academic_department,
+    # unit — even though most of them are blank for any given account. They are
+    # here because `User.clean()` enforces the pairing between a role and its
+    # fields, and a ModelForm can only report an error against a field it
+    # actually has. Leaving `unit` off this form meant that creating a handler
+    # raised "A handler must belong to a unit" against a field the form had
+    # never heard of, and Django turned that into
+    #
+    #     ValueError: 'UserForm' has no field named 'unit'
+    #
+    # — a crash rather than the validation message a person could act on.
+    #
+    # The alternative fix is to catch such errors and re-raise them as
+    # non-field errors. This one is better: a handler genuinely needs a unit,
+    # so the right moment to ask for it is when the account is created, not on
+    # a second screen afterwards.
+    #
+    # The rule to keep: every field name `User.clean()` can put an error
+    # against must appear somewhere below. There is a test for exactly that.
     add_fieldsets = [
         (
             None,
             {
                 "classes": ["wide"],
-                "fields": ["email", "full_name", "role", "password1", "password2"],
+                "fields": ["email", "full_name", "role"],
+            },
+        ),
+        (
+            "Student details",
+            {
+                "classes": ["wide"],
+                "fields": ["matric_no", "academic_department"],
+                "description": "Students only. Leave blank for staff.",
+            },
+        ),
+        (
+            "Handler details",
+            {
+                "classes": ["wide"],
+                "fields": ["unit"],
+                "description": (
+                    "Handlers only — required for them, and must be blank for "
+                    "students and administrators."
+                ),
+            },
+        ),
+        (
+            "Password",
+            {
+                "classes": ["wide"],
+                "fields": ["password1", "password2"],
             },
         ),
     ]
