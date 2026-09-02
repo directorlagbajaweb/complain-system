@@ -12,6 +12,18 @@ main {
     min-height: calc(100vh - 56px);
 }
 
+/* The box a Chart.js canvas draws into.
+ *
+ * A responsive chart takes its size from its container, so the height has to
+ * be stated somewhere or the canvas ends up sized by whatever flex rules
+ * surround it. Stating it here means both charts are the same height, that
+ * height does not drift with the viewport, and changing it is a one-line edit.
+ * `position: relative` is what Chart.js needs in order to measure the box. */
+.chart-box {
+    position: relative;
+    height: 300px;
+}
+
 /* The role badge in the navbar reads "Student" / "Handler" / "Administrator".
    Lower case with wide letter spacing makes it read as a label rather than as
    part of the person's name. */

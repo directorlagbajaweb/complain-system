@@ -88,7 +88,16 @@
       <div class="card shadow-sm h-100">
         <div class="card-body">
           <h2 class="h6 text-body-secondary text-uppercase mb-3">Complaints per unit</h2>
-          <canvas id="unitChart" height="240"></canvas>
+          {% comment %}
+            The wrapper is what sets the chart's height. A responsive Chart.js
+            canvas sizes itself to its container, so without a container that
+            states a height the chart inherits whatever Bootstrap's h-100 flex
+            row happens to produce — which varied with viewport width and grew
+            the page. The canvas carries no width/height attributes because
+            Chart.js overwrites them; stating them only invites the reader to
+            believe a number that is not true.
+          {% endcomment %}
+          <div class="chart-box"><canvas id="unitChart"></canvas></div>
         </div>
       </div>
     </div>
@@ -98,7 +107,7 @@
           <h2 class="h6 text-body-secondary text-uppercase mb-3">
             Filed against resolved, last 6 months
           </h2>
-          <canvas id="monthChart" height="240"></canvas>
+          <div class="chart-box"><canvas id="monthChart"></canvas></div>
         </div>
       </div>
     </div>
@@ -230,33 +239,176 @@
       // ordinary data — no template tags inside the JavaScript.
       const data = JSON.parse(document.getElementById('chart-data').textContent);
 
-      const grid = 'rgba(128, 128, 128, 0.2)';
-      const common = {
-        responsive: true,
-        maintainAspectRatio: false,
-        scales: {
-          y: {
-            beginAtZero: true,
-            // Complaints are whole things; half a complaint is not a reading.
-            ticks: { precision: 0 },
-            grid: { color: grid }
+      // Muted grey for every label, and a gridline light enough to read
+      // against rather than through. Both are deliberately low-contrast: the
+      // data should be the only strong thing on the chart.
+      const INK = '#6c757d';
+      const GRID = 'rgba(108, 117, 125, 0.18)';
+
+      // Restrained colours rather than Bootstrap's signal blue and green,
+      // which shout on a chart even though they read well on a badge.
+      const BAR = '#7f9cbb';
+      const FILED = '#4c78a8';
+      const RESOLVED = '#6a9f58';
+
+      // The axis that carries the numbers. Gridlines belong here, because a
+      // gridline is only useful for reading a value off a scale.
+      function valueAxis() {
+        return {
+          // A truncated scale exaggerates differences; starting at zero means
+          // the length of a bar is proportional to its value.
+          beginAtZero: true,
+          grid: { color: GRID, lineWidth: 1, drawTicks: false },
+          // No axis spine — the gridlines already imply the axis.
+          border: { display: false },
+          ticks: {
+            // Complaints are whole things; half a complaint is not a reading,
+            // and 0.5 on the axis would invite one.
+            precision: 0,
+            color: INK,
+            font: { size: 11 },
+            padding: 8,
+            maxTicksLimit: 6
+          }
+        };
+      }
+
+      // The axis that carries the names. No gridlines: they would chop the
+      // plot into boxes without helping anyone read a value.
+      function categoryAxis() {
+        return {
+          grid: { display: false },
+          border: { display: false },
+          ticks: { color: INK, font: { size: 11 }, padding: 8 }
+        };
+      }
+
+      /**
+       * The shared look, as a factory rather than a shared object.
+       *
+       * Both charts want the same gridlines, ticks and tooltip. A plain object
+       * shared between them would have to be merged per chart, and
+       * `Object.assign` is shallow — a per-chart `plugins` key would silently
+       * replace the whole tooltip config along with the legend. Returning a
+       * fresh object each call sidesteps that, and means neither chart can
+       * mutate the other's options after construction.
+       *
+       * @param {object}  config
+       * @param {boolean} config.legend      true for the two-series line chart.
+       * @param {boolean} config.horizontal  true when bars run left to right,
+       *   which swaps which axis carries the values and therefore which one
+       *   carries the gridlines.
+       */
+      function baseOptions(config) {
+        const horizontal = Boolean(config.horizontal);
+
+        return {
+          responsive: true,
+          // The container states the height (see .chart-box in site.css), so
+          // the chart must not try to derive one from an aspect ratio.
+          maintainAspectRatio: false,
+
+          // `indexAxis` is the axis the categories are laid out along, so 'y'
+          // turns a column chart into a horizontal bar chart. Set here rather
+          // than at the call site so orientation is decided in one place and
+          // the scales below cannot disagree with it.
+          indexAxis: horizontal ? 'y' : 'x',
+
+          // Breathing room inside the canvas so the outermost labels, and the
+          // last gridline's value, are not clipped by the edge.
+          layout: { padding: { top: 8, right: 12, bottom: 4, left: 4 } },
+
+          // Hovering anywhere along a row or column picks it, instead of
+          // demanding the pointer land exactly on a 2px dot. `axis` has to
+          // follow the orientation: for horizontal bars the categories are
+          // stacked down the y axis, so that is the direction to match on.
+          interaction: {
+            mode: 'index',
+            intersect: false,
+            axis: horizontal ? 'y' : 'x'
           },
-          x: { grid: { display: false } }
-        }
-      };
+
+          plugins: {
+            legend: config.legend
+              ? {
+                  // Top-right and small: a key, not a heading.
+                  position: 'top',
+                  align: 'end',
+                  labels: {
+                    usePointStyle: true,
+                    pointStyle: 'circle',
+                    boxWidth: 6,
+                    boxHeight: 6,
+                    padding: 12,
+                    color: INK,
+                    font: { size: 11 }
+                  }
+                }
+              // A legend naming the only series on the chart is furniture.
+              : { display: false },
+
+            tooltip: {
+              backgroundColor: 'rgba(33, 37, 41, 0.92)',
+              titleFont: { size: 11, weight: '600' },
+              bodyFont: { size: 11 },
+              padding: 8,
+              cornerRadius: 4,
+              // The series is already named in the tooltip's text, so the
+              // colour swatch beside it is redundant ink.
+              displayColors: false
+            }
+          },
+
+          // Which axis holds the numbers depends on the orientation, and the
+          // gridlines follow the numbers rather than being pinned to x or y.
+          scales: horizontal
+            ? { x: valueAxis(), y: categoryAxis() }
+            : { x: categoryAxis(), y: valueAxis() }
+        };
+      }
+
+      // Busiest unit at the top.
+      //
+      // `stats.complaints_per_unit()` already returns the rows in this order,
+      // but sorting here as well keeps the chart's own promise local to the
+      // chart: if the query's ordering is ever changed for some other reason,
+      // the bars stay sorted. The two arrays are parallel, so they are zipped
+      // into records, sorted together, and unzipped — sorting one alone would
+      // put every label against the wrong number.
+      const perUnit = data.per_unit.labels
+        .map(function (label, index) {
+          return { label: label, value: data.per_unit.values[index] };
+        })
+        .sort(function (a, b) { return b.value - a.value; });
 
       new Chart(document.getElementById('unitChart'), {
         type: 'bar',
         data: {
-          labels: data.per_unit.labels,
+          labels: perUnit.map(function (row) { return row.label; }),
           datasets: [{
             label: 'Complaints',
-            data: data.per_unit.values,
-            backgroundColor: '#0d6efd'
+            data: perUnit.map(function (row) { return row.value; }),
+            backgroundColor: BAR,
+            hoverBackgroundColor: FILED,
+            // Thin bars with a gap between them: the value is the length, and
+            // fat bars spend ink on thickness that carries no information.
+            categoryPercentage: 0.6,
+            barPercentage: 0.9,
+            maxBarThickness: 28,
+            // Rounded at the far end only. `borderSkipped: 'start'` means the
+            // base of the bar, whichever way it runs, so the bars stay planted
+            // on the axis rather than floating off it.
+            borderRadius: 3,
+            borderSkipped: 'start'
           }]
         },
-        options: Object.assign({}, common, {
-          plugins: { legend: { display: false } }
+        options: baseOptions({
+          legend: false,
+          // Bars run left to right so the unit names sit down the left as
+          // ordinary horizontal text. Rotating or truncating long names was
+          // treating the symptom; turning the chart is the fix, and it also
+          // means a longer unit name added later needs no change here.
+          horizontal: true
         })
       });
 
@@ -268,22 +420,33 @@
             {
               label: 'Filed',
               data: data.by_month.filed,
-              borderColor: '#0d6efd',
-              backgroundColor: '#0d6efd',
-              tension: 0.3
+              borderColor: FILED,
+              backgroundColor: FILED,
+              pointBackgroundColor: FILED
             },
             {
               label: 'Resolved',
               data: data.by_month.resolved,
-              borderColor: '#198754',
-              backgroundColor: '#198754',
-              tension: 0.3
+              borderColor: RESOLVED,
+              backgroundColor: RESOLVED,
+              pointBackgroundColor: RESOLVED
             }
-          ]
+          ].map(function (dataset) {
+            // The two series differ only in name, numbers and colour, so the
+            // line styling is applied once here instead of being typed twice.
+            return Object.assign(dataset, {
+              borderWidth: 2,
+              // No area fill: two filled bands would overlap and the one in
+              // front would hide the other.
+              fill: false,
+              tension: 0.3,
+              pointRadius: 2.5,
+              pointHoverRadius: 5,
+              pointBorderWidth: 0
+            });
+          })
         },
-        options: Object.assign({}, common, {
-          plugins: { legend: { position: 'bottom' } }
-        })
+        options: baseOptions({ legend: true })
       });
     })();
   </script>
