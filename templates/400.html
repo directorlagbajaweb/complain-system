@@ -1,0 +1,7 @@
+{% extends 'base.html' %}
+
+{% block title %}Bad request{% endblock %}
+
+{% block content %}
+{% include 'partials/_error_page.html' with code="400" heading="Bad request" message="That request could not be processed." %}
+{% endblock content %}

@@ -10,13 +10,21 @@ cannot quietly break them.
 Run with:  python manage.py test
 """
 
+import copy
+import re
 import shutil
 import tempfile
 from io import StringIO
 
+from django.conf import settings
+from django.core.exceptions import PermissionDenied, SuspiciousOperation
 from django.core.management import call_command
-from django.test import TestCase, override_settings
+from django.http import Http404
+from django.template import engines, loader
+from django.test import Client, RequestFactory, TestCase, override_settings
 from django.urls import reverse
+from django.views import defaults
+from django.views.csrf import csrf_failure
 
 from .management.commands.seed_demo import STUDENTS, TOTAL_COMPLAINTS, matric_for
 from .models import (
@@ -1850,3 +1858,243 @@ class SeedDemoClearTests(TestCase):
         self.assertFalse(
             User.objects.filter(role=User.Role.HANDLER, unit__isnull=True).exists()
         )
+
+
+class ErrorPageTests(StudentComplaintTestCase):
+    """
+    The five custom error pages.
+
+    Two things are being held in place here. The first is that they render at
+    all with DEBUG off, which is the only mode in which anybody sees them —
+    with DEBUG on Django shows its own traceback page instead, so a broken
+    error template is invisible right up until it is in production.
+
+    The second is that the 404 gives nothing away. A student who guesses
+    another student's reference number gets a 404, because the detail view
+    looks the complaint up in a queryset already filtered to complaints they
+    own — so "not yours" and "does not exist" are the same miss, in the same
+    line of code. That is the property worth testing: not that the page says
+    the right words, but that it says the *same* words either way.
+    """
+
+    ERROR_PAGES = [
+        ('404.html', '404', "Page not found",
+         "We could not find that page. It may have been moved, or the link "
+         "may be wrong."),
+        ('403.html', '403', "You do not have access",
+         "Your account does not have permission to view this page."),
+        ('500.html', '500', "Something went wrong",
+         "An unexpected error occurred on our end. Please try again in a "
+         "moment."),
+        ('400.html', '400', "Bad request",
+         "That request could not be processed."),
+        ('403_csrf.html', '403', "Your session expired",
+         "For your security, that form has expired. Please go back and try "
+         "again."),
+    ]
+
+    def setUp(self):
+        # The premise of the whole class. Django's test runner turns DEBUG off,
+        # and if that ever stopped being true these tests would be exercising
+        # the traceback page instead of the templates.
+        self.assertFalse(settings.DEBUG)
+
+    @staticmethod
+    def without_csrf(html):
+        """
+        The same page rendered twice differs: the CSRF token in the navbar's
+        log-out form is masked afresh each time. Blanking it is what lets two
+        responses be compared for genuine differences.
+        """
+        return re.sub(r'value="[^"]{32,}"', 'value="CSRF"', html)
+
+    MISSING = 'MISSINGVARIABLE'
+
+    @classmethod
+    def render_with_sentinel(cls, template_name):
+        """
+        Render with `string_if_invalid` set, so that a variable the context
+        cannot supply shows up in the output instead of vanishing.
+        """
+        options = copy.deepcopy(settings.TEMPLATES)
+        options[0].setdefault('OPTIONS', {})['string_if_invalid'] = cls.MISSING
+        with override_settings(TEMPLATES=options):
+            engines._engines = {}          # rebuild the engine with the option
+            try:
+                return loader.get_template(template_name).render()
+            finally:
+                engines._engines = {}      # and put the real one back
+
+    # -- The one that matters ---------------------------------------------
+
+    def test_404_is_identical_for_a_guessed_reference_and_a_missing_one(self):
+        self.client.login(username=self.student.email, password=PASSWORD)
+
+        guessed = self.client.get(f'/complaints/{self.theirs.reference_no}/')
+        missing = self.client.get('/complaints/CMP-2099-9999/')
+
+        self.assertEqual(guessed.status_code, 404)
+        self.assertEqual(missing.status_code, 404)
+        self.assertEqual(
+            self.without_csrf(guessed.content.decode()),
+            self.without_csrf(missing.content.decode()),
+            "the 404 for another student's complaint differs from the 404 for "
+            "one that does not exist — the difference tells the guesser which "
+            "reference numbers are real",
+        )
+
+    def test_404_does_not_echo_what_was_asked_for(self):
+        """
+        Django's own 404 page prints the path it could not find. Ours must
+        not: the path is the reference number, and repeating it back is half
+        of a confirmation.
+        """
+        self.client.login(username=self.student.email, password=PASSWORD)
+
+        body = self.client.get(
+            f'/complaints/{self.theirs.reference_no}/'
+        ).content.decode()
+
+        self.assertNotIn(self.theirs.reference_no, body)
+        self.assertNotIn(self.theirs.subject, body)
+        self.assertNotIn('CMP-', body)
+
+    # -- Rendering ---------------------------------------------------------
+
+    def test_500_renders_with_no_request_and_no_context(self):
+        """
+        django.views.defaults.server_error calls template.render() with no
+        arguments at all. Anything in this template that needs a context
+        processor — `user`, the notification count — would raise here, and a
+        500 page that raises gets replaced by Django's unstyled fallback at
+        the moment the site is already broken.
+        """
+        html = loader.get_template('500.html').render()
+
+        self.assertIn("Something went wrong", html)
+        self.assertIn("An unexpected error occurred", html)
+        # The navbar rendered, but only the half that needs no request.
+        self.assertIn("AAU Complaint Desk", html)
+        self.assertNotIn("Log out", html)
+
+    def test_500_refers_to_nothing_a_context_processor_would_supply(self):
+        """
+        The stronger half of the test above, and the one that actually bites.
+
+        A missing template variable does not raise — Django renders it as an
+        empty string — so a 500 page that says "Signed in as {{ user.full_name }}"
+        passes a "does it render" check while printing "Signed in as " to
+        every visitor. Rendering with string_if_invalid set turns that silence
+        into something assertable: any variable the template asks for and the
+        empty context cannot supply comes back as the sentinel.
+        """
+        html = self.render_with_sentinel('500.html')
+
+        self.assertIn("Something went wrong", html)
+        self.assertNotIn(
+            self.MISSING, html,
+            "500.html reads a variable that is not there when Django renders "
+            "it with no context — it will render blank in production",
+        )
+
+    def test_500_view_returns_the_custom_page(self):
+        response = defaults.server_error(RequestFactory().get('/anything/'))
+
+        self.assertEqual(response.status_code, 500)
+        self.assertIn("Something went wrong", response.content.decode())
+
+    def test_each_page_renders_with_its_wording_and_a_way_out(self):
+        for template_name, code, heading, message in self.ERROR_PAGES:
+            with self.subTest(template=template_name):
+                html = loader.get_template(template_name).render()
+
+                self.assertIn(code, html)
+                self.assertIn(heading, html)
+                self.assertIn(message, html)
+                # The way out, and it is the root redirect rather than a
+                # role-specific URL, so it suits a visitor as well as a user.
+                self.assertIn(f'href="{reverse("root")}"', html)
+                self.assertIn("Go to the home page", html)
+
+    def test_django_defaults_pick_the_templates_up(self):
+        """
+        No handler404/403/500/400 is set in cms/urls.py, because Django's
+        default views already load these template names from the project
+        templates directory. This is what says so — if that stopped being
+        true, the pages would silently revert to Django's bare ones.
+        """
+        from cms import urls as project_urls
+
+        for handler in ('handler400', 'handler403', 'handler404', 'handler500'):
+            with self.subTest(handler=handler):
+                self.assertFalse(hasattr(project_urls, handler))
+
+        request = RequestFactory().get('/anything/')
+        responses = [
+            (404, defaults.page_not_found(request, Http404())),
+            (403, defaults.permission_denied(request, PermissionDenied())),
+            (400, defaults.bad_request(request, SuspiciousOperation())),
+            (500, defaults.server_error(request)),
+        ]
+        for expected_status, response in responses:
+            with self.subTest(status=expected_status):
+                self.assertEqual(response.status_code, expected_status)
+                self.assertIn("AAU Complaint Desk", response.content.decode())
+
+    def test_a_real_csrf_failure_shows_the_custom_page(self):
+        """
+        End to end, through the middleware: a POST with no CSRF token, which
+        is what a form left open past its session looks like from the server's
+        side. Django's own page for this is unstyled and explains cross-site
+        request forgery to someone who only needs to know to try again.
+        """
+        client = Client(enforce_csrf_checks=True)
+
+        response = client.post(reverse('login'), {
+            'username': self.student.email, 'password': PASSWORD,
+        })
+        body = response.content.decode()
+
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("Your session expired", body)
+        self.assertIn("Go to the home page", body)
+        # Django's built-in fallback, which this replaces.
+        self.assertNotIn("CSRF verification failed", body)
+        self.assertNotIn("cross-site", body.lower())
+
+    def test_csrf_failure_view_reveals_no_diagnostics(self):
+        """
+        csrf_failure builds a context full of referer and cookie diagnostics
+        for its own page. None of it is in scope in ours, and this says so
+        against the real view rather than against the template alone.
+        """
+        from django.middleware.csrf import REASON_NO_CSRF_COOKIE
+
+        response = csrf_failure(
+            RequestFactory().post('/anything/'), reason=REASON_NO_CSRF_COOKIE
+        )
+        body = response.content.decode()
+
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("Your session expired", body)
+        self.assertNotIn(REASON_NO_CSRF_COOKIE, body)
+        self.assertNotIn("Referer", body)
+        self.assertNotIn("cookie", body.lower())
+
+    # -- Discretion --------------------------------------------------------
+
+    def test_the_pages_describe_nothing_about_the_system(self):
+        """
+        No model names, no URL patterns, no exception text. The list is of
+        things Django's own error pages happily print.
+        """
+        leaks = [
+            'Traceback', 'Exception', 'urlpatterns', 'reference_no',
+            'complaints.models', 'DoesNotExist', 'Http404', 'django.',
+            'settings', 'sqlite', 'SELECT ',
+        ]
+        for template_name, _, _, _ in self.ERROR_PAGES:
+            html = loader.get_template(template_name).render()
+            for leak in leaks:
+                with self.subTest(template=template_name, leak=leak):
+                    self.assertNotIn(leak, html)

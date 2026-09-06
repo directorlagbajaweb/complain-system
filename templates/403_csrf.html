@@ -1,0 +1,27 @@
+{% extends 'base.html' %}
+{% comment %}
+  The page Django shows when a POST fails CSRF verification.
+
+  This is a separate template from 403.html because Django asks for it by a
+  separate name — django.views.csrf.csrf_failure loads "403_csrf.html", and
+  falls back to its own unstyled built-in page when that file is missing. So
+  this is not a duplicate of the 403: it is the one that a real user is most
+  likely to meet, since the ordinary way to fail CSRF is to leave a form open
+  until the session behind it expires and then press the button.
+
+  Hence the wording. "You do not have access" would be wrong here — the
+  person has access, their form just went stale — and telling them about
+  cross-site request forgery would explain the mechanism to someone who only
+  needs to know to try again.
+
+  csrf_failure renders this with the request but with no context dictionary of
+  its own, so the navbar comes out complete, and none of the context it builds
+  for its built-in page — the failure reason, the referer and cookie
+  diagnostics — is in scope here to leak by accident.
+{% endcomment %}
+
+{% block title %}Your session expired{% endblock %}
+
+{% block content %}
+{% include 'partials/_error_page.html' with code="403" heading="Your session expired" message="For your security, that form has expired. Please go back and try again." %}
+{% endblock content %}

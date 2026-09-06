@@ -227,6 +227,19 @@ main {
     display: inline-block;
 }
 
+/* The status code on an error page. Large enough to say at a glance which
+   kind of wrong this is, muted enough not to shout it — the heading below is
+   the part with the answer in it, and a 96px red number would make the page
+   feel like an alarm rather than a dead end. */
+.error-code {
+    margin-bottom: 0.5rem;
+    font-size: 3.5rem;
+    font-weight: 600;
+    line-height: 1;
+    letter-spacing: -0.02em;
+    color: var(--bs-secondary-color);
+}
+
 /* The box a Chart.js canvas draws into.
  *
  * A responsive chart takes its size from its container, so the height has to

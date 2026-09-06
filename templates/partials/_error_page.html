@@ -1,0 +1,38 @@
+{% comment %}
+  The body of an error page. Used as:
+    {% templatetag openblock %} include 'partials/_error_page.html' with code="404" heading="Page not found" message="…" {% templatetag closeblock %}
+
+  All four error pages share this one file so that they cannot drift apart in
+  layout or in what they give away. That matters most for 404: a student who
+  guesses another student's reference number must see exactly what they would
+  see for a reference that does not exist anywhere. One template is the
+  simplest way to make "exactly" true and keep it true.
+
+  Nothing here is interpolated from the request. No path, no reference, no
+  exception, no model name — the caller passes three fixed strings and that is
+  all there is. An error page that echoes what you asked for is an error page
+  that answers questions about what exists.
+
+  The way out is {% templatetag openblock %} url 'root' {% templatetag closeblock %}, which root_view redirects to whichever
+  home the signed-in role has, or to the login page for a visitor. So one link
+  works for students, handlers, administrators and strangers alike, and this
+  template never has to know which it is talking to — it could not find out on
+  the 500 page anyway, which renders with no request behind it.
+{% endcomment %}
+<div class="row justify-content-center">
+  <div class="col-md-8 col-lg-6">
+    <div class="card shadow-sm">
+      <div class="card-body p-4 p-md-5 text-center">
+
+        <p class="error-code">{{ code }}</p>
+
+        <h1 class="h4 mb-2">{{ heading }}</h1>
+
+        <p class="text-body-secondary mb-4">{{ message }}</p>
+
+        <a class="btn btn-primary" href="{% url 'root' %}">Go to the home page</a>
+
+      </div>
+    </div>
+  </div>
+</div>

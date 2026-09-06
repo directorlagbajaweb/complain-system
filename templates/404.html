@@ -1,0 +1,7 @@
+{% extends 'base.html' %}
+
+{% block title %}Page not found{% endblock %}
+
+{% block content %}
+{% include 'partials/_error_page.html' with code="404" heading="Page not found" message="We could not find that page. It may have been moved, or the link may be wrong." %}
+{% endblock content %}

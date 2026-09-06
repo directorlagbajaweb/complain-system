@@ -1,0 +1,28 @@
+{% extends 'base.html' %}
+{% comment %}
+  The 500 page is the one template in the project that renders with no
+  request behind it.
+
+  django.views.defaults.server_error calls template.render() with no context
+  and no request, deliberately: by the time this page is needed, whatever the
+  request touched is already suspect. So nothing here may depend on a context
+  processor. `user` and `unread_notification_count` are simply absent, which
+  is fine — base.html hides the whole signed-in half of the navbar behind
+  `{% templatetag openblock %} if user.is_authenticated {% templatetag closeblock %}`, and an absent variable is falsy — but it does
+  mean this page shows the bar with no notification bell on it, for a signed
+  in user as much as for anybody else. That is the correct trade: a bell that
+  cannot be counted is worth less than a 500 page that renders.
+
+  It also means a second error here produces Django's bare
+  "A server error occurred." with no styling at all, so the rule for this file
+  is that it stays this plain. There is a test for exactly that.
+
+  {% templatetag openblock %} url 'root' {% templatetag closeblock %} inside the include is safe: reverse() reads the
+  URLconf, not the request.
+{% endcomment %}
+
+{% block title %}Something went wrong{% endblock %}
+
+{% block content %}
+{% include 'partials/_error_page.html' with code="500" heading="Something went wrong" message="An unexpected error occurred on our end. Please try again in a moment." %}
+{% endblock content %}
