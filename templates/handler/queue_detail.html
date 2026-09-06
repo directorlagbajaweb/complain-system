@@ -5,12 +5,8 @@
 
 {% block content %}
 
-<nav aria-label="breadcrumb">
-  <ol class="breadcrumb small">
-    <li class="breadcrumb-item"><a href="{% url 'handler_queue' %}">Complaint queue</a></li>
-    <li class="breadcrumb-item active" aria-current="page">{{ complaint.reference_no }}</li>
-  </ol>
-</nav>
+{% url 'handler_queue' as handler_queue_url %}
+{% include 'partials/_back_link.html' with url=handler_queue_url label="Complaint queue" %}
 
 <div class="row g-4">
 

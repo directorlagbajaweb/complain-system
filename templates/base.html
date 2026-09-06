@@ -43,43 +43,60 @@
 
       {# The navbar only has something in it once somebody is signed in. #}
       {% if user.is_authenticated %}
-        <button class="navbar-toggler" type="button" data-bs-toggle="collapse"
-                data-bs-target="#navbarMain" aria-controls="navbarMain"
-                aria-expanded="false" aria-label="Toggle navigation">
-          <span class="navbar-toggler-icon"></span>
-        </button>
+
+        {% comment %}
+          The bell and the hamburger, together and OUTSIDE the collapse.
+
+          The bell has to be out here. Its whole job is the unread count, and
+          a count that only appears once you have opened the menu is a count
+          you will not know to go looking for. The menu items behind the
+          hamburger are things you go to deliberately — your own name, Log out
+          — so those can stay collapsed.
+
+          At md and up the toggler is hidden by Bootstrap and site.css pushes
+          this group right, so the order across the bar stays what it was
+          before the split: notifications, then who you are, then Log out.
+        {% endcomment %}
+        <div class="navbar-actions d-flex align-items-center">
+
+          {% comment %}
+            `unread_notification_count` is put into every template by
+            complaints/context_processors.py, because this sits on every page
+            and no single view could supply it.
+
+            The count is only rendered when it is above zero — a badge reading
+            "0" is noise that trains people to ignore the badge.
+          {% endcomment %}
+          <a class="nav-link position-relative"
+             href="{% url 'notification_list' %}"
+             aria-label="Notifications{% if unread_notification_count %} ({{ unread_notification_count }} unread){% endif %}">
+            {# The word is for wide screens; the bell carries it on a phone. #}
+            <span class="d-none d-md-inline">Notifications</span>
+            <span class="navbar-bell d-md-none" aria-hidden="true">&#128276;</span>
+            {% if unread_notification_count %}
+              <span class="badge rounded-pill text-bg-danger ms-1">
+                {{ unread_notification_count }}
+              </span>
+            {% endif %}
+          </a>
+
+          <button class="navbar-toggler ms-2" type="button"
+                  data-bs-toggle="collapse" data-bs-target="#navbarMain"
+                  aria-controls="navbarMain" aria-expanded="false"
+                  aria-label="Toggle navigation">
+            <span class="navbar-toggler-icon"></span>
+          </button>
+        </div>
 
         <div class="collapse navbar-collapse justify-content-end" id="navbarMain">
           <ul class="navbar-nav align-items-md-center">
-
-            {% comment %}
-              The notification bell. `unread_notification_count` is put into
-              every template by complaints/context_processors.py, because this
-              sits on every page and no single view could supply it.
-
-              The count is only rendered when it is above zero — a badge
-              reading "0" is noise that trains people to ignore the badge.
-            {% endcomment %}
-            <li class="nav-item">
-              <a class="nav-link position-relative me-md-3"
-                 href="{% url 'notification_list' %}"
-                 aria-label="Notifications{% if unread_notification_count %} ({{ unread_notification_count }} unread){% endif %}">
-                Notifications
-                {% if unread_notification_count %}
-                  <span class="badge rounded-pill text-bg-danger ms-1">
-                    {{ unread_notification_count }}
-                  </span>
-                {% endif %}
-              </a>
-            </li>
-
-            <li class="nav-item">
+            <li class="nav-item py-2 py-md-0">
               <span class="navbar-text me-md-3">
                 {{ user.full_name }}
                 <span class="badge text-bg-secondary ms-1">{{ user.get_role_display }}</span>
               </span>
             </li>
-            <li class="nav-item">
+            <li class="nav-item pb-2 pb-md-0">
               {% comment %}
                 A form, not a link: logging out changes state, so it has to be a
                 POST. See the comment on logout_view for what a GET would let

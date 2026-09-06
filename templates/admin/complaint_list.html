@@ -5,12 +5,8 @@
 
 {% block content %}
 
-  <nav aria-label="breadcrumb">
-    <ol class="breadcrumb small">
-      <li class="breadcrumb-item"><a href="{% url 'admin_dashboard' %}">Dashboard</a></li>
-      <li class="breadcrumb-item active" aria-current="page">All complaints</li>
-    </ol>
-  </nav>
+  {% url 'admin_dashboard' as admin_dashboard_url %}
+  {% include 'partials/_back_link.html' with url=admin_dashboard_url label="Dashboard" %}
 
   <h1 class="h3 mb-3">All complaints</h1>
 

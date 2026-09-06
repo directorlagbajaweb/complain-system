@@ -6,12 +6,8 @@
 <div class="row justify-content-center">
   <div class="col-lg-8">
 
-    <nav aria-label="breadcrumb">
-      <ol class="breadcrumb small">
-        <li class="breadcrumb-item"><a href="{% url 'student_home' %}">My complaints</a></li>
-        <li class="breadcrumb-item active" aria-current="page">New</li>
-      </ol>
-    </nav>
+    {% url 'student_home' as student_home_url %}
+    {% include 'partials/_back_link.html' with url=student_home_url label="My complaints" %}
 
     <div class="card shadow-sm">
       <div class="card-body p-4">

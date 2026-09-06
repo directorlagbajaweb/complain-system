@@ -167,6 +167,66 @@ main {
     }
 }
 
+/* The bell-and-hamburger group sits outside the collapse, which is what keeps
+   the unread count on screen when the menu is shut. Below md the navbar's own
+   flex container is `justify-content: space-between` and wraps, so this lands
+   at the right-hand end of the top row on its own.
+ *
+ * From md up the group has to move to the far side of the menu, or the bell
+ * would sit against the brand on the left. Bootstrap lets .navbar-collapse
+ * keep `flex-grow: 1` at that width, and a growing sibling eats the free space
+ * an auto margin would otherwise take — so the grow is dropped first and the
+ * margin does the pushing. That restores the original left-to-right order:
+ * notifications, name, Log out. */
+@media (min-width: 768px) {
+    .navbar-aau .navbar-collapse {
+        flex-grow: 0;
+    }
+
+    .navbar-aau .navbar-actions {
+        margin-left: auto;
+    }
+}
+
+/* The bell glyph stands in for the word "Notifications" on a phone. Bumped up
+   a little because an emoji at body size next to a badge reads as a smudge. */
+.navbar-bell {
+    font-size: 1.15rem;
+    line-height: 1;
+}
+
+/* The link back to a page's parent, above the heading. A link rather than a
+   button, because it navigates and changes nothing — and buttons alongside a
+   heading read as the page's actions, which this is not.
+ *
+ * Muted at rest so it does not compete with the heading underneath it, and it
+ * takes the link colour on hover to confirm it is one. */
+.back-link {
+    display: inline-block;
+    margin-bottom: 0.75rem;
+    font-size: 0.875rem;
+    color: var(--bs-secondary-color);
+    text-decoration: none;
+}
+
+.back-link:hover,
+.back-link:focus-visible {
+    color: var(--aau-blue);
+    text-decoration: underline;
+}
+
+/* The chevron. Nudged up by a hair because the glyph sits low in its line box
+   next to lower-case text, and given a fixed gap rather than a space so the
+   underline on hover does not stretch out to meet it. */
+.back-link-chevron {
+    margin-right: 0.3rem;
+    font-size: 1.1em;
+    line-height: 1;
+    vertical-align: -0.05em;
+    text-decoration: none;
+    display: inline-block;
+}
+
 /* The box a Chart.js canvas draws into.
  *
  * A responsive chart takes its size from its container, so the height has to

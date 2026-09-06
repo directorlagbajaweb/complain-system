@@ -6,6 +6,24 @@
 <div class="row justify-content-center">
   <div class="col-lg-8">
 
+    {% comment %}
+      Back to whichever of the three dashboards this person came from.
+
+      The href is the site root rather than one of the three URLs directly.
+      root_view already redirects to home_url_for(user), so pointing at it
+      keeps the "which home does this role have" rule in the one place that
+      owns it — the template only has to pick the wording, and cannot drift
+      from the routing the way a hard-coded URL per role would.
+    {% endcomment %}
+    {% url 'root' as home_url %}
+    {% if user.role == 'admin' %}
+      {% include 'partials/_back_link.html' with url=home_url label="Dashboard" %}
+    {% elif user.role == 'handler' %}
+      {% include 'partials/_back_link.html' with url=home_url label="Complaint queue" %}
+    {% else %}
+      {% include 'partials/_back_link.html' with url=home_url label="My complaints" %}
+    {% endif %}
+
     <h1 class="h3 mb-3">Notifications</h1>
 
     {% if notifications %}

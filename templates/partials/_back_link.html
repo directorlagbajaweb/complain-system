@@ -1,0 +1,19 @@
+{% comment %}
+  The link back to a page's parent. Used as:
+    {% templatetag openblock %} include 'partials/_back_link.html' with url=... label="My complaints" {% templatetag closeblock %}
+
+  A back link rather than a breadcrumb trail. Every page that has a parent
+  here has exactly one, and it is one level up — so a trail spends a line to
+  say "Parent / This page" when the second half is already the heading two
+  lines below it. The single link says the same thing and reads as something
+  you can press, which on a phone is the point.
+
+  The chevron is a character rather than an icon font or an SVG: the project
+  ships no icon set, and one glyph is not a reason to start.
+
+  aria-hidden on the chevron because "less-than sign My complaints" is not
+  what a screen reader should say. The link text carries the meaning.
+{% endcomment %}
+<a class="back-link" href="{{ url }}">
+  <span class="back-link-chevron" aria-hidden="true">&lsaquo;</span>{{ label }}
+</a>
