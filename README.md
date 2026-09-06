@@ -1,6 +1,6 @@
 # Complaint Management System
 
-A web-based complaint management system for a Nigerian polytechnic.
+A web-based complaint management system for a Nigerian university.
 Students file complaints, staff handle them in a threaded conversation,
 and administrators oversee the whole thing.
 
@@ -12,8 +12,8 @@ Password for all seeded accounts: `demo-pass-2026`
 
 | Role | Email |
 |---|---|
-| Student | chinedu.okafor@student.federalpoly.edu.ng |
-| Handler | folake.ogunleye@federalpoly.edu.ng |
+| Student | chinedu.okafor@student.aauekpoma.edu.ng |
+| Handler | folake.ogunleye@aauekpoma.edu.ng |
 
 ## Built with
 

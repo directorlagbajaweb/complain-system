@@ -6,10 +6,165 @@
  * is upgraded, whereas a Bootstrap utility class is somebody else's problem.
  */
 
+/* ---------------------------------------------------------------------------
+ * Institutional palette.
+ *
+ * Bootstrap 5.3 exposes its theme as CSS custom properties, so the house
+ * colours go in once here and every component that reads them follows. That
+ * is why there are almost no colour rules further down this file: restyling
+ * components one at a time is exactly the maintenance burden the note above
+ * is warning about.
+ * ------------------------------------------------------------------------ */
+
+:root {
+    --aau-navy: #17275A;   /* navbar, page headings */
+    --aau-blue: #2B5CA8;   /* primary buttons, links, the bar chart */
+    --aau-red:  #CE3E23;   /* danger, high priority */
+    --aau-bg:   #F7F8FA;   /* page background */
+
+    /* Darker steps for hover and active states, matching how Bootstrap
+       derives its own: roughly 15% and 20% towards black. */
+    --aau-blue-dark:   #254E8F;
+    --aau-blue-darker: #224A86;
+    --aau-red-dark:    #AF351E;
+    --aau-red-darker:  #A5321C;
+
+    /* Bootstrap's theme colours. The -rgb pairs matter as much as the hex
+       ones: utilities such as .text-bg-danger and .bg-primary are built from
+       rgba(var(--bs-*-rgb), opacity) rather than from the hex value. */
+    --bs-primary: var(--aau-blue);
+    --bs-primary-rgb: 43, 92, 168;
+    --bs-danger: var(--aau-red);
+    --bs-danger-rgb: 206, 62, 35;
+
+    /* .alert-danger — the "that did not work" box on every form — is built
+       from these three rather than from --bs-danger, so without them the
+       error alerts would keep Bootstrap's crimson while everything else
+       moved. Derived the way Bootstrap derives its own: the text 60% towards
+       black, the ground and border 80% and 60% towards white. */
+    --bs-danger-text-emphasis: #52190E;
+    --bs-danger-bg-subtle: #F5D8D3;
+    --bs-danger-border-subtle: #EBB2A7;
+
+    /* The page ground. body carries .bg-body-tertiary, which reads the -rgb
+       form, so both have to be set. */
+    --bs-tertiary-bg: var(--aau-bg);
+    --bs-tertiary-bg-rgb: 247, 248, 250;
+
+    /* h1–h6 and the .h1–.h6 classes all inherit from this one property.
+       Headings that are deliberately quiet carry .text-body-secondary, whose
+       !important keeps them grey. */
+    --bs-heading-color: var(--aau-navy);
+
+    /* Links: blue at rest, navy on hover, so hovering darkens rather than
+       changing hue. */
+    --bs-link-color: var(--aau-blue);
+    --bs-link-color-rgb: 43, 92, 168;
+    --bs-link-hover-color: var(--aau-navy);
+    --bs-link-hover-color-rgb: 23, 39, 90;
+}
+
+/* .btn-primary and friends do not read --bs-primary; each variant hard-codes
+   its own --bs-btn-* values. Overriding those variables is still the
+   Bootstrap-sanctioned way in — it is the same mechanism, one level down. */
+.btn-primary {
+    --bs-btn-bg: var(--aau-blue);
+    --bs-btn-border-color: var(--aau-blue);
+    --bs-btn-hover-bg: var(--aau-blue-dark);
+    --bs-btn-hover-border-color: var(--aau-blue-dark);
+    --bs-btn-active-bg: var(--aau-blue-darker);
+    --bs-btn-active-border-color: var(--aau-blue-darker);
+    --bs-btn-disabled-bg: var(--aau-blue);
+    --bs-btn-disabled-border-color: var(--aau-blue);
+    --bs-btn-focus-shadow-rgb: 43, 92, 168;
+}
+
+.btn-outline-primary {
+    --bs-btn-color: var(--aau-blue);
+    --bs-btn-border-color: var(--aau-blue);
+    --bs-btn-hover-bg: var(--aau-blue);
+    --bs-btn-hover-border-color: var(--aau-blue);
+    --bs-btn-active-bg: var(--aau-blue-darker);
+    --bs-btn-active-border-color: var(--aau-blue-darker);
+    --bs-btn-disabled-color: var(--aau-blue);
+    --bs-btn-disabled-border-color: var(--aau-blue);
+    --bs-btn-focus-shadow-rgb: 43, 92, 168;
+}
+
+.btn-danger {
+    --bs-btn-bg: var(--aau-red);
+    --bs-btn-border-color: var(--aau-red);
+    --bs-btn-hover-bg: var(--aau-red-dark);
+    --bs-btn-hover-border-color: var(--aau-red-dark);
+    --bs-btn-active-bg: var(--aau-red-darker);
+    --bs-btn-active-border-color: var(--aau-red-darker);
+    --bs-btn-disabled-bg: var(--aau-red);
+    --bs-btn-disabled-border-color: var(--aau-red);
+    --bs-btn-focus-shadow-rgb: 206, 62, 35;
+}
+
+/* The form control that has focus. Bootstrap keeps this one outside the
+   theme variables, so it would otherwise stay the stock blue. */
+.form-control:focus,
+.form-select:focus,
+.form-check-input:focus {
+    border-color: var(--aau-blue);
+    box-shadow: 0 0 0 0.25rem rgba(43, 92, 168, 0.25);
+}
+
+.form-check-input:checked {
+    background-color: var(--aau-blue);
+    border-color: var(--aau-blue);
+}
+
+/* ---------------------------------------------------------------------------
+ * Layout and components
+ * ------------------------------------------------------------------------ */
+
 /* Push the footer of short pages (login, signup) off the top of the screen so
    the card sits in the middle rather than clinging to the navbar. */
 main {
     min-height: calc(100vh - 56px);
+}
+
+/* The navbar's own colour, rather than .bg-dark. Overriding --bs-dark would
+   have reached the navbar, but it would also have repainted the "Closed"
+   status badge, which is .text-bg-dark and is meant to stay as it is. */
+.navbar-aau {
+    background-color: var(--aau-navy);
+}
+
+/* The brand: logo, then the system name, then — from md up — the institution
+   underneath it. The two lines stack, so the anchor becomes a flex row with
+   the logo beside a block of text rather than Bootstrap's default single
+   line of text. */
+.navbar-brand-aau {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+    line-height: 1.1;
+}
+
+.navbar-brand-aau img {
+    height: 32px;
+    width: auto;
+}
+
+/* The institution line. Smaller and dimmed so the system name stays the
+   thing you read first, and hidden below md where the navbar is already
+   competing with the toggler for width. */
+.navbar-brand-sub {
+    display: none;
+    font-size: 0.6875rem;
+    font-weight: 400;
+    letter-spacing: 0.01em;
+    color: rgba(255, 255, 255, 0.72);
+}
+
+@media (min-width: 768px) {
+    .navbar-brand-sub {
+        display: block;
+    }
 }
 
 /* The box a Chart.js canvas draws into.

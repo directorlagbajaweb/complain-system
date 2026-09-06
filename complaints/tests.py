@@ -10,10 +10,26 @@ cannot quietly break them.
 Run with:  python manage.py test
 """
 
-from django.test import TestCase
+import shutil
+import tempfile
+from io import StringIO
+
+from django.core.management import call_command
+from django.test import TestCase, override_settings
 from django.urls import reverse
 
-from .models import AcademicDepartment, Unit, User
+from .management.commands.seed_demo import STUDENTS, TOTAL_COMPLAINTS, matric_for
+from .models import (
+    AcademicDepartment,
+    Attachment,
+    Category,
+    Complaint,
+    Message,
+    Notification,
+    StatusHistory,
+    Unit,
+    User,
+)
 
 STUDENT_HOME = '/complaints/'
 HANDLER_QUEUE = '/queue/'
@@ -1601,3 +1617,236 @@ class AdminUserCreationTests(TestCase):
         ]:
             with self.subTest(field=expected):
                 self.assertIn(expected, fields)
+
+
+# The seeded password is hashed once per account per run, and PBKDF2 is slow
+# on purpose. Seeding creates seventeen accounts, so a real hasher turns a
+# reseed into nearly three seconds of key stretching and these tests into the
+# slowest thing in the suite. Nothing below is about hashing.
+@override_settings(
+    PASSWORD_HASHERS=['django.contrib.auth.hashers.MD5PasswordHasher']
+)
+class SeedDemoClearTests(TestCase):
+    """
+    `seed_demo --clear` has to be re-runnable.
+
+    It used to delete the complaint data and leave the seeded accounts behind,
+    on the reasoning that accounts are configuration. They are not: STUDENTS
+    in seed_demo.py carries a matriculation number per student, and matric_no
+    is unique. So the moment the seeded student data changed — which it did,
+    when the demo moved from polytechnic ND/HND numbers to the AAU faculty
+    format — reseeding tried to issue a number that a leftover account was
+    still holding, and the run died with
+
+        IntegrityError: UNIQUE constraint failed: complaints_user.matric_no
+
+    The subtlety is *which* leftovers. The accounts that broke it were not on
+    the current domains; they were on the federalpoly domains used before the
+    institution was renamed, because that rename created a fresh set of
+    accounts under the new domain and orphaned the old set. Clearing only the
+    current domains would leave that database just as stuck, which is why
+    seed_demo.SEEDED_DOMAINS keeps the superseded ones.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        # Seeding writes attachment files through the storage backend, so the
+        # tests get a MEDIA_ROOT of their own rather than scattering PDFs in
+        # the developer's media/ directory.
+        cls._media_root = tempfile.mkdtemp(prefix='seed-demo-tests-')
+        cls._media_override = override_settings(MEDIA_ROOT=cls._media_root)
+        cls._media_override.enable()
+        # setUpTestData runs inside super().setUpClass(), so the override has
+        # to be enabled before it, not after.
+        super().setUpClass()
+
+    @classmethod
+    def tearDownClass(cls):
+        super().tearDownClass()
+        cls._media_override.disable()
+        shutil.rmtree(cls._media_root, ignore_errors=True)
+
+    @classmethod
+    def setUpTestData(cls):
+        """One full seed, shared by every test in the class."""
+        cls.seed()
+
+    @staticmethod
+    def seed(*args):
+        """Run the command, returning everything it printed."""
+        out = StringIO()
+        call_command('seed_demo', *args, stdout=out)
+        return out.getvalue()
+
+    @staticmethod
+    def fingerprint():
+        """
+        Everything a reseed is supposed to reproduce exactly.
+
+        Row counts alone would pass while the contents drifted, so the
+        complaints themselves are included, keyed by reference number.
+        """
+        return {
+            'counts': {
+                'complaints': Complaint.objects.count(),
+                'messages': Message.objects.count(),
+                'attachments': Attachment.objects.count(),
+                'history': StatusHistory.objects.count(),
+                'notifications': Notification.objects.count(),
+                'users': User.objects.count(),
+            },
+            'complaints': list(
+                Complaint.objects.order_by('reference_no').values_list(
+                    'reference_no', 'subject', 'status', 'priority',
+                    'student__email', 'student__matric_no', 'category__name',
+                )
+            ),
+        }
+
+    def stale_accounts_from_the_old_domain(self):
+        """
+        Re-create the situation the bug report came from: accounts left by a
+        previous version of seed_demo, on the domain used before the rename,
+        holding the matriculation numbers the current file wants to issue.
+        """
+        departments = {d.name: d for d in AcademicDepartment.objects.all()}
+        for full_name, entry_serial, department_name in STUDENTS:
+            first, last = full_name.lower().split()
+            User.objects.create_user(
+                email=f"{first}.{last}@student.federalpoly.edu.ng",
+                password=PASSWORD,
+                full_name=full_name,
+                role=User.Role.STUDENT,
+                matric_no=matric_for(entry_serial, department_name),
+                academic_department=departments[department_name],
+            )
+
+    # -- The regression ----------------------------------------------------
+
+    def test_clear_removes_accounts_left_by_a_superseded_domain(self):
+        """The IntegrityError in the bug report, and its absence now."""
+        Complaint.objects.all().delete()
+        User.objects.all().delete()
+        self.stale_accounts_from_the_old_domain()
+        self.assertEqual(User.objects.count(), 12)
+
+        # Before the fix this raised IntegrityError on complaints_user.matric_no.
+        self.seed('--clear')
+
+        self.assertFalse(
+            User.objects.filter(email__endswith='federalpoly.edu.ng').exists(),
+            "accounts from the superseded domain survived --clear, so the next "
+            "reseed will collide with them on matric_no all over again",
+        )
+        # And the numbers they were holding were successfully reissued.
+        self.assertTrue(
+            User.objects.filter(matric_no='FPS/CSC 22/79931').exists()
+        )
+
+    def test_clear_twice_in_a_row_gives_identical_results(self):
+        first_output = self.seed('--clear')
+        first = self.fingerprint()
+
+        second_output = self.seed('--clear')
+        second = self.fingerprint()
+
+        self.assertEqual(first, second)
+        self.assertEqual(first_output, second_output)
+        # Guard against both runs being identically empty.
+        self.assertEqual(first['counts']['complaints'], TOTAL_COMPLAINTS)
+
+    def test_clear_reports_how_many_accounts_it_removed(self):
+        output = self.seed('--clear')
+
+        seeded = User.objects.exclude(is_superuser=True).count()
+        self.assertIn(f"removed {seeded} seeded accounts", output)
+        self.assertIn("Seeded accounts wiped", output)
+
+    def test_a_plain_run_reports_no_accounts_wiped(self):
+        """The summary line belongs to --clear, not to every run."""
+        Complaint.objects.all().delete()
+
+        self.assertNotIn("Seeded accounts wiped", self.seed())
+
+    # -- What --clear must not touch ---------------------------------------
+
+    def test_clear_spares_accounts_outside_the_seeded_domains(self):
+        """
+        The reason accounts are matched by domain rather than by role: a
+        superuser made with createsuperuser, and anyone who registered through
+        the signup form while looking at the demo, are not this command's to
+        delete.
+        """
+        registrar = User.objects.create_superuser(
+            email='registrar@aau.example.org', password=PASSWORD,
+            full_name="Real Registrar",
+        )
+        visitor = User.objects.create_user(
+            email='visitor@gmail.com', password=PASSWORD,
+            full_name="Curious Visitor", role=User.Role.STUDENT,
+            matric_no='FPS/CSC 20/11111',
+            academic_department=AcademicDepartment.objects.first(),
+        )
+
+        self.seed('--clear')
+
+        for survivor in (registrar, visitor):
+            with self.subTest(email=survivor.email):
+                self.assertTrue(User.objects.filter(pk=survivor.pk).exists())
+
+    def test_clear_spares_a_superuser_inside_a_seeded_domain(self):
+        """
+        A superuser on the seeded domain was made by hand — seed_demo never
+        creates one — so a reseed that deleted it would log the administrator
+        out of their own site.
+        """
+        admin = User.objects.create_superuser(
+            email='ict.director@aauekpoma.edu.ng', password=PASSWORD,
+            full_name="ICT Director",
+        )
+
+        self.seed('--clear')
+
+        self.assertTrue(User.objects.filter(pk=admin.pk).exists())
+
+    def test_clear_leaves_the_lookup_tables_alone(self):
+        """
+        Units, categories and departments are seeded by seed_lookups with
+        get_or_create keyed on name, so a reseed should match the existing
+        rows rather than replace them. Primary keys are what proves it: equal
+        counts alone would also hold if every row had been deleted and rebuilt,
+        which would break every complaint pointing at one.
+        """
+        def lookups():
+            return {
+                'units': sorted(Unit.objects.values_list('pk', 'name')),
+                'categories': sorted(Category.objects.values_list('pk', 'name')),
+                'departments': sorted(
+                    AcademicDepartment.objects.values_list('pk', 'name')
+                ),
+            }
+
+        before = lookups()
+        self.seed('--clear')
+        self.seed('--clear')
+
+        self.assertEqual(before, lookups())
+        # Non-empty, so the comparison is not trivially satisfied.
+        self.assertTrue(all(before.values()))
+
+    def test_reseeded_students_keep_their_department(self):
+        """
+        academic_department is SET_NULL, so deleting a department out from
+        under a student would silently blank the field rather than fail. This
+        is what would catch that.
+        """
+        self.seed('--clear')
+
+        self.assertFalse(
+            User.objects.filter(
+                role=User.Role.STUDENT, academic_department__isnull=True
+            ).exists()
+        )
+        self.assertFalse(
+            User.objects.filter(role=User.Role.HANDLER, unit__isnull=True).exists()
+        )

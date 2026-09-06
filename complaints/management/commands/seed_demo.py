@@ -7,7 +7,7 @@ Rebuild:    python manage.py seed_demo --clear
 This is for demonstrations and screenshots, not for tests — tests build their
 own data so that they never depend on whatever happens to be in the database.
 What this command is for is having something on screen that looks like a real
-polytechnic's complaint system rather than "Test complaint 1" repeated fifty
+university's complaint system rather than "Test complaint 1" repeated fifty
 times, and having the dashboard's Attention panel actually contain something.
 
 Three things make the data awkward to create, and each is handled the same way:
@@ -25,7 +25,7 @@ Three things make the data awkward to create, and each is handled the same way:
 
   * Randomness has to be repeatable, or two runs produce different data and
     a screenshot cannot be reproduced. Everything comes from one seeded
-    `random.Random`, so the same command always builds the same polytechnic.
+    `random.Random`, so the same command always builds the same university.
 
 All timestamps are built in Africa/Lagos, the project's timezone, so complaints
 are filed during Nigerian working hours rather than at whatever time it happens
@@ -44,6 +44,7 @@ from django.core.files.base import ContentFile
 from django.core.management import call_command
 from django.core.management.base import BaseCommand
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from complaints.models import (
@@ -60,15 +61,33 @@ from complaints.notifications import notify
 from complaints import stats
 
 # One seed for the whole command. Change it and you get a different but equally
-# plausible polytechnic; leave it and every run is identical.
+# plausible university; leave it and every run is identical.
 RANDOM_SEED = 20260901
 
 # Every demo account shares this password. It is printed at the end so whoever
 # is giving the demo can sign in as any of them.
 DEMO_PASSWORD = "demo-pass-2026"
 
-STUDENT_DOMAIN = "student.federalpoly.edu.ng"
-STAFF_DOMAIN = "federalpoly.edu.ng"
+STUDENT_DOMAIN = "student.aauekpoma.edu.ng"
+STAFF_DOMAIN = "aauekpoma.edu.ng"
+
+# Every email domain this command has ever seeded accounts under, which is
+# what --clear matches on to find the accounts it is allowed to delete.
+#
+# The superseded entries have to stay. --clear needs to remove accounts a
+# *previous* version of this file created, and that is not hypothetical: the
+# run that renamed the institution created a fresh set of aauekpoma accounts
+# and left the federalpoly ones behind, still holding the matriculation
+# numbers the next run tried to issue. matric_no is unique, so the reseed died
+# on an IntegrityError. Matching only the current pair would leave that exact
+# database just as stuck.
+#
+# When a domain changes, move the old one down here rather than deleting it.
+SUPERSEDED_DOMAINS = (
+    "student.federalpoly.edu.ng",
+    "federalpoly.edu.ng",
+)
+SEEDED_DOMAINS = (STUDENT_DOMAIN, STAFF_DOMAIN) + SUPERSEDED_DOMAINS
 
 TOTAL_COMPLAINTS = 55
 
@@ -77,22 +96,79 @@ TOTAL_COMPLAINTS = 55
 # People
 # ---------------------------------------------------------------------------
 
-# (full name, matric number, academic department). One student per department,
-# which is also the simplest way to spread them evenly.
+# Faculty and department codes, keyed by the department names seed_lookups
+# creates. A matriculation number here opens with the faculty that owns the
+# department, so the mapping is kept in one table and the prefix is built from
+# it rather than typed out again beside each student — which is what stops a
+# Computer Science student from being issued a Management Sciences number.
+FACULTY_CODES = {
+    "Accounting": ("FMS", "ACC"),                # Management Sciences
+    "Business Administration": ("FMS", "BUS"),
+    "Civil Engineering": ("FES", "CVE"),         # Engineering
+    "Computer Science": ("FPS", "CSC"),          # Physical Sciences
+    "Economics": ("FSS", "ECO"),                 # Social Sciences
+    "Electrical Engineering": ("FES", "EEE"),
+    "Law": ("FLW", "LAW"),
+    "Mass Communication": ("FAR", "MCM"),        # Arts
+    "Mechanical Engineering": ("FES", "MEE"),
+    "Medicine and Surgery": ("FCS", "MED"),      # Clinical Sciences
+    "Microbiology": ("FLS", "MCB"),              # Life Sciences
+    "Political Science": ("FSS", "POL"),
+}
+
+# The session the demo data sits in, named by the year it opened: 2025/2026.
+# level_for() turns a matriculation year into a level against it.
+SESSION_START_YEAR = 2025
+
+# (full name, the year-and-serial half of the matriculation number, academic
+# department). One student per department, which is also the simplest way to
+# spread them evenly.
+#
+# Only half the matriculation number is written here. matric_for() puts the
+# faculty and department in front of it, so "FPS/CSC 22/79931" is assembled
+# rather than stored, and the entry year stays visible — it is the one part
+# of the number this file reads back, to work out what level someone is in.
 STUDENTS = [
-    ("Chinedu Okafor", "ND/23/CSC/0142", "Computer Science"),
-    ("Aisha Bello", "ND/23/ACC/0087", "Accounting"),
-    ("Oluwaseun Adeyemi", "HND/22/EEE/0311", "Electrical Engineering"),
-    ("Ngozi Eze", "ND/24/MCM/0056", "Mass Communication"),
-    ("Ibrahim Musa", "HND/22/CVE/0204", "Civil Engineering"),
-    ("Funmilayo Adebayo", "ND/23/BUS/0173", "Business Administration"),
-    ("Emeka Nwosu", "ND/24/MEE/0029", "Mechanical Engineering"),
-    ("Halima Yusuf", "HND/23/ECO/0118", "Economics"),
-    ("Tunde Bakare", "ND/22/POL/0245", "Political Science"),
-    ("Chiamaka Obi", "ND/24/MCB/0061", "Microbiology"),
-    ("Suleiman Abdullahi", "HND/22/LAW/0192", "Law"),
-    ("Blessing Etim", "ND/23/MED/0134", "Medicine and Surgery"),
+    ("Chinedu Okafor", "22/79931", "Computer Science"),
+    ("Aisha Bello", "23/71204", "Accounting"),
+    ("Oluwaseun Adeyemi", "22/64420", "Electrical Engineering"),
+    ("Ngozi Eze", "24/83057", "Mass Communication"),
+    ("Ibrahim Musa", "22/66418", "Civil Engineering"),
+    ("Funmilayo Adebayo", "23/72640", "Business Administration"),
+    ("Emeka Nwosu", "24/85129", "Mechanical Engineering"),
+    ("Halima Yusuf", "23/70883", "Economics"),
+    ("Tunde Bakare", "22/65274", "Political Science"),
+    ("Chiamaka Obi", "24/84306", "Microbiology"),
+    ("Suleiman Abdullahi", "22/67015", "Law"),
+    ("Blessing Etim", "23/73592", "Medicine and Surgery"),
 ]
+
+
+def matric_for(entry_serial, department_name):
+    """('22/79931', 'Computer Science') -> 'FPS/CSC 22/79931'."""
+    faculty, department = FACULTY_CODES[department_name]
+    return f"{faculty}/{department} {entry_serial}"
+
+
+def level_for(matric_no):
+    """
+    'FPS/CSC 22/79931' -> '400'.
+
+    Somebody who matriculated in 2022 is in their fourth year in 2025/2026,
+    and a fourth year is 400 level. This is only ever used to fill in the
+    seeded receipts, so that the level printed on a student's fee receipt
+    agrees with the year in their matriculation number instead of being a
+    constant that contradicts half of them.
+
+    Anything that is not a matriculation number in the house format comes
+    back as "—", the same placeholder the receipts already use for a missing
+    number: a seeding run should not fall over because one row is odd.
+    """
+    try:
+        entry_year = 2000 + int(matric_no.split()[1].split('/')[0])
+    except (AttributeError, IndexError, ValueError):
+        return "—"
+    return str((SESSION_START_YEAR - entry_year + 1) * 100)
 
 # One handler per unit — the person a complaint routed to that office lands on.
 HANDLERS = {
@@ -117,7 +193,7 @@ COMPLAINT_TEMPLATES = {
     "School fees payment": [
         (
             "Fees paid at the bank but portal still shows unpaid",
-            "I paid my ND II second semester fees on 14 July at the Zenith Bank "
+            "I paid my second semester fees on 14 July at the Zenith Bank "
             "branch on campus and I have both the teller and the Remita RRR. "
             "The portal still shows my fees as outstanding, so I cannot print "
             "my course form. My RRR is 280194557331.",
@@ -150,8 +226,9 @@ COMPLAINT_TEMPLATES = {
         ),
         (
             "Overpayment of ₦45,000 on school fees",
-            "I mistakenly paid the HND fee amount instead of the ND amount. The "
-            "difference is ₦45,000. I have the teller showing both the correct "
+            "I mistakenly paid the fresh student fee instead of the returning "
+            "student amount. The difference is ₦45,000. I have the teller "
+            "showing both the correct "
             "amount and what I paid.",
         ),
     ],
@@ -271,8 +348,9 @@ COMPLAINT_TEMPLATES = {
             "walk on the grass to get past.",
         ),
         (
-            "Blocked toilets in the ND II lecture block",
-            "Three of the four toilets in the ND II block have been blocked for "
+            "Blocked toilets in the Faculty of Social Sciences lecture block",
+            "Three of the four toilets in the Social Sciences block have been "
+            "blocked for "
             "over a week. The smell reaches the lecture rooms and classes "
             "nearby are difficult to sit through.",
         ),
@@ -282,7 +360,7 @@ COMPLAINT_TEMPLATES = {
             "MTH 201 result missing from my transcript",
             "I sat MTH 201 last session and I know I passed, but the result is "
             "blank on my transcript. My CGPA has been calculated without it and "
-            "it is affecting my class of diploma.",
+            "it is affecting my class of degree.",
         ),
         (
             "Result shows F for a course I passed",
@@ -291,9 +369,9 @@ COMPLAINT_TEMPLATES = {
             "have the record corrected.",
         ),
         (
-            "Second semester results not released for ND I Computer Science",
+            "Second semester results not released for 200 level Computer Science",
             "It has been nine weeks since our last paper and the second "
-            "semester results for ND I Computer Science are still not out. "
+            "semester results for 200 level Computer Science are still not out. "
             "Other departments released theirs weeks ago.",
         ),
     ],
@@ -312,7 +390,8 @@ COMPLAINT_TEMPLATES = {
         ),
         (
             "Wrong level assigned during course registration",
-            "My portal has me as ND I but I am in ND II this session. It is "
+            "My portal has me as 200 level but I am in 300 level this session. "
+            "It is "
             "showing me the wrong course list and I cannot register any of my "
             "actual courses.",
         ),
@@ -428,13 +507,13 @@ ATTACHMENT_SPECS = {
         'filename': "remita-receipt.pdf",
         'kind': 'pdf',
         'lines': [
-            "FEDERAL POLYTECHNIC",
+            "AMBROSE ALLI UNIVERSITY",
             "Remita Payment Receipt",
             "",
             "RRR ..................... 280194557331",
             "Payer ................... {student}",
             "Matric No ............... {matric}",
-            "Description ............. ND II School Fees, 2025/2026",
+            "Description ............. {level} Level School Fees, 2025/2026",
             "Amount .................. NGN 68,500.00",
             "Bank .................... Zenith Bank Plc",
             "Status .................. SUCCESSFUL",
@@ -450,7 +529,7 @@ ATTACHMENT_SPECS = {
             "Counter Deposit Slip (customer copy)",
             "",
             "Depositor ............... {student}",
-            "Account ................. Federal Polytechnic Fees Account",
+            "Account ................. Ambrose Alli University Fees Account",
             "Amount .................. NGN 45,000.00",
             "Teller No ............... 4471902",
             "",
@@ -461,7 +540,7 @@ ATTACHMENT_SPECS = {
         'filename': "result-printout.pdf",
         'kind': 'pdf',
         'lines': [
-            "FEDERAL POLYTECHNIC",
+            "AMBROSE ALLI UNIVERSITY",
             "Statement of Result (portal printout)",
             "",
             "Student ................. {student}",
@@ -478,12 +557,12 @@ ATTACHMENT_SPECS = {
         'filename': "course-form.pdf",
         'kind': 'pdf',
         'lines': [
-            "FEDERAL POLYTECHNIC",
+            "AMBROSE ALLI UNIVERSITY",
             "Course Registration Form (printed from portal)",
             "",
             "Student ................. {student}",
             "Matric No ............... {matric}",
-            "Level ................... ND I",
+            "Level ................... {level}",
             "",
             "Registered .............. 5 courses",
             "Expected ................ 8 courses",
@@ -522,9 +601,10 @@ class Command(BaseCommand):
             '--clear',
             action='store_true',
             help=(
-                "Delete all complaints, messages, attachments, status history "
-                "and notifications first, then reseed. Units, categories, "
-                "academic departments and user accounts are left alone."
+                "Delete all complaints, messages, attachments, status history, "
+                "notifications and the accounts this command seeded, then "
+                "reseed. Units, categories and academic departments are left "
+                "alone, as is any account outside the seeded email domains."
             ),
         )
 
@@ -536,6 +616,10 @@ class Command(BaseCommand):
         # file it under. seed_lookups is safe to re-run, so just call it —
         # quietly, because its own output is not interesting here.
         call_command('seed_lookups', stdout=StringIO())
+
+        # Reported at the end. Stays at zero on a run without --clear, which
+        # is what keeps the line out of that run's summary.
+        self.cleared_accounts = 0
 
         if options['clear']:
             self._clear()
@@ -562,15 +646,25 @@ class Command(BaseCommand):
 
     def _clear(self):
         """
-        Remove the complaint data and nothing else.
+        Remove the demo data and nothing else.
 
         Deleting the complaints alone would cascade to all four of the other
         tables, but they are deleted explicitly so the command can report what
-        it removed. Units, categories, departments and users are untouched:
-        they are configuration, not demo content, and a handler account that
-        vanished on every reseed would be infuriating.
+        it removed.
+
+        The seeded accounts go too, and they have to: STUDENTS is part of the
+        demo data, so when a matriculation number in it changes, reseeding
+        would try to issue a number that a leftover account from the previous
+        shape of the file is still holding — and matric_no is unique, so the
+        whole run dies on an IntegrityError. Leaving the accounts behind only
+        looks harmless while the seed data never changes.
+
+        Units, categories and academic departments are left alone. They are
+        configuration rather than demo content, seed_lookups builds them with
+        get_or_create keyed on their names, and nothing about them is unique
+        per run — so a stale one is reused rather than collided with.
         """
-        self.stdout.write("Clearing existing complaint data…")
+        self.stdout.write("Clearing existing demo data…")
 
         # Deleting an Attachment row does not delete the file it points at, so
         # the files are removed first. Without this, every reseed would leave
@@ -594,6 +688,39 @@ class Command(BaseCommand):
             queryset.delete()
             self.stdout.write(f"  removed {removed} {label}")
 
+        # Accounts last: the complaints that referenced them are gone by now,
+        # so nothing here cascades into data we still wanted.
+        self.cleared_accounts = self._clear_seeded_accounts()
+        self.stdout.write(f"  removed {self.cleared_accounts} seeded accounts")
+
+    def _clear_seeded_accounts(self):
+        """
+        Delete the accounts this command created, and return how many.
+
+        They are found by email domain rather than by role. Role would sweep
+        up every student and handler in the database, including ones a person
+        registered through the signup form while looking at the demo; the
+        domains in SEEDED_DOMAINS are ours by construction, so they name
+        exactly the accounts this file is responsible for — including the ones
+        an earlier version of it created under a domain since renamed.
+
+        Superusers are excluded even inside those domains. This command never
+        creates one — it tells you to run createsuperuser instead — so any
+        superuser found here was made by hand, and a reseed that logged the
+        administrator out of their own site would be its own bug report.
+        """
+        matches_a_seeded_domain = Q()
+        for domain in SEEDED_DOMAINS:
+            matches_a_seeded_domain |= Q(email__endswith=f"@{domain}")
+
+        seeded = User.objects.filter(matches_a_seeded_domain).exclude(
+            is_superuser=True
+        )
+
+        removed = seeded.count()
+        seeded.delete()
+        return removed
+
     # -- People ------------------------------------------------------------
 
     def _account(self, email, full_name, **extra):
@@ -610,14 +737,14 @@ class Command(BaseCommand):
     def _create_students(self):
         departments = {d.name: d for d in AcademicDepartment.objects.all()}
         students = []
-        for full_name, matric_no, department_name in STUDENTS:
+        for full_name, entry_serial, department_name in STUDENTS:
             first, last = full_name.lower().split()
             students.append(
                 self._account(
                     email=f"{first}.{last}@{STUDENT_DOMAIN}",
                     full_name=full_name,
                     role=User.Role.STUDENT,
-                    matric_no=matric_no,
+                    matric_no=matric_for(entry_serial, department_name),
                     academic_department=departments.get(department_name),
                 )
             )
@@ -1315,6 +1442,7 @@ class Command(BaseCommand):
                     line.format(
                         student=complaint.student.full_name,
                         matric=complaint.student.matric_no or "—",
+                        level=level_for(complaint.student.matric_no),
                         reference=complaint.reference_no,
                     )
                     for line in spec['lines']
@@ -1402,6 +1530,11 @@ class Command(BaseCommand):
             f"{Notification.objects.filter(is_read=False).count():>3}"
         )
         write(f"  Avg days to resolve   {average if average is not None else '—':>3}")
+
+        # Only after a --clear, where it is the one number in this block that
+        # describes what the run destroyed rather than what it built.
+        if self.cleared_accounts:
+            write(f"  Seeded accounts wiped {self.cleared_accounts:>3}")
 
         write(self.style.SUCCESS(f"\nSign in with password: {DEMO_PASSWORD}"))
         write(f"  student  {students[0].email}")

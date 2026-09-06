@@ -15,14 +15,31 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Complaint Management System{% endblock %}</title>
+  <link rel="icon" href="{% static 'img/aau-logo.png' %}">
   <link rel="stylesheet" href="{% static 'vendor/bootstrap/bootstrap.min.css' %}">
   <link rel="stylesheet" href="{% static 'css/site.css' %}">
 </head>
 <body class="bg-body-tertiary">
 
-  <nav class="navbar navbar-expand-md navbar-dark bg-dark">
+  <nav class="navbar navbar-expand-md navbar-dark navbar-aau">
     <div class="container">
-      <a class="navbar-brand" href="{% url 'root' %}">Complaint Management System</a>
+      {% comment %}
+        The brand: the university's arms, the name of the system, and — from
+        md up, where there is room for it — the institution underneath. The
+        second line is hidden on narrow screens by site.css rather than by
+        d-none d-md-block, because it is one line of one component and the
+        breakpoint belongs beside the rest of the brand's styling.
+
+        alt="" on the logo: the text next to it already names the
+        institution, so announcing the image as well only repeats it.
+      {% endcomment %}
+      <a class="navbar-brand navbar-brand-aau" href="{% url 'root' %}">
+        <img src="{% static 'img/aau-logo.png' %}" alt="">
+        <span>
+          AAU Complaint Desk
+          <span class="navbar-brand-sub">Ambrose Alli University, Ekpoma</span>
+        </span>
+      </a>
 
       {# The navbar only has something in it once somebody is signed in. #}
       {% if user.is_authenticated %}
